@@ -1,0 +1,6 @@
+name = "ahl-proofs"
+version = "0.1.0"
+defaultTargets = ["AhlProofs"]
+
+[[lean_lib]]
+name = "AhlProofs"
