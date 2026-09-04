@@ -122,7 +122,7 @@ sharing a `ddig` would share a preimage" — and the lemma repeats that rather t
 theorem descriptor_digest_collision {D₁ D₂ : Desc} (hne : D₁ ≠ D₂)
     (heq : M.ddig Dm D₁ = M.ddig Dm D₂) :
     Collision M.H (Dm.JCS D₁) (Dm.JCS D₂) :=
-  ⟨Dm.jcs_inj D₁ D₂ hne, heq⟩
+  ⟨Dm.jcs_ne hne, heq⟩
 
 /-- **Lemma 1c**, composed with Lemma 1b: at the level of the triple
 `(dataset id, descriptor, canonical bytes)` — the triple the I-D warns is *not* the one the

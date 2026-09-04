@@ -103,9 +103,17 @@ structure DescriptorModel (Desc : Type) where
   /-- RFC 8785 canonical encoding of a descriptor. -/
   JCS : Desc → Bytes
   /-- **Assumption JCS-INJ** (invariants page Section 0; I-D Section 2.6): RFC 8785
-  canonicalization is injective on I-JSON values. Declared as an assumption rather than
-  proved — the AHL documents say so explicitly, and nothing here strengthens it. -/
-  jcs_inj : ∀ D₁ D₂ : Desc, D₁ ≠ D₂ → JCS D₁ ≠ JCS D₂
+  canonicalization is injective on I-JSON values — one canonical encoding is produced by at
+  most one descriptor. Declared as an assumption rather than proved: the AHL documents say so
+  explicitly, and nothing here strengthens it. Lemma 1c uses it through
+  `DescriptorModel.jcs_ne`, the contrapositive. -/
+  jcs_inj : Function.Injective JCS
+
+/-- The contrapositive of JCS-INJ, which is the form Lemma 1c consumes: distinct descriptors
+have distinct canonical encodings. -/
+theorem DescriptorModel.jcs_ne {Desc : Type} (Dm : DescriptorModel Desc) {D₁ D₂ : Desc}
+    (h : D₁ ≠ D₂) : Dm.JCS D₁ ≠ Dm.JCS D₂ :=
+  fun he => h (Dm.jcs_inj he)
 
 /-- The descriptor digest `ddig = H(JCS(D))` (I-D Section 2.6). -/
 def HashModel.ddig {Key Desc : Type} (M : HashModel Key) (Dm : DescriptorModel Desc)
