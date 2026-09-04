@@ -4,5 +4,8 @@ import AhlProofs.RecordBinding.Boundary
 import AhlProofs.Closure.Model
 import AhlProofs.Closure.RevocationCompleteness
 import AhlProofs.Closure.Boundary
+import AhlProofs.Tree.Model
+import AhlProofs.Tree.AppendOnly
+import AhlProofs.Tree.Boundary
 
 /-! Machine-checked AHL invariants: the library root imports every module. -/

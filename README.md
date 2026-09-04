@@ -1,11 +1,12 @@
 # ahl-proofs
 
-Machine-checked proofs of the AHL invariants, in Lean 4. This repository currently contains
-**Lemma 1, record binding** and **Lemma 2, revocation completeness relative to a checkpoint** —
-the first two of the three lemmas listed on the AHL invariants page
-(`ahl/docs-md/ahl-invariants.md`). Their sources in the protocol document are the AHL I-D
-revision 0.4, Sections 2.6, 8.1 and 8.6 (Lemma 1) and Sections 2.4, 5.1 to 5.4, 7.2 and the
-Section 7.5.1 erratum 4d (Lemma 2).
+Machine-checked proofs of the AHL invariants, in Lean 4. This repository contains all three
+lemmas of the AHL invariants page (`ahl/docs-md/ahl-invariants.md`): **Lemma 1, record
+binding**, **Lemma 2, revocation completeness relative to a checkpoint**, and **Lemma 3,
+append-only consistency**. Their sources in the protocol document are the AHL I-D revision 0.4,
+Sections 2.6, 8.1 and 8.6 (Lemma 1); Sections 2.4, 5.1 to 5.4, 7.2 and the Section 7.5.1
+erratum 4d (Lemma 2); and Sections 2.7, 3.1, 3.2, 7.4, 7.5 and 8.3 with RFC 9162 Section 2.1
+(Lemma 3).
 
 No `sorry`. No `axiom` declaration of our own: every assumption is a parameter or a structure
 field carrying a doc comment that cites the I-D section it comes from.
@@ -17,7 +18,11 @@ lake build
 ```
 
 Toolchain: `leanprover/lean4:v4.31.0`, pinned in `lean-toolchain`. **No Mathlib**, and no
-other dependency. Lemma 1 needs only `List` facts Lean's own prelude provides
+other dependency. Lemma 3 was the last chance for one — the RFC 9162 split point needs
+`Nat.log2` and powers of two — and the prelude turned out to carry everything required
+(`Nat.log2_self_le`, `Nat.lt_log2_self`, `Nat.two_pow_pos`, `Nat.pow_le_pow_right`), so the
+dependency-free build stands for all three lemmas. Lemma 1 needs only `List` facts Lean's own
+prelude provides
 (`List.append_inj`, `List.cons.injEq`, `List.mem_cons_of_mem`). Lemma 2 needs finite-set
 reasoning, which is where a library would normally be reached for; the two facts actually
 required — that filtering by a strictly stronger predicate shortens a list, and duplicate
@@ -156,12 +161,83 @@ Nothing in Lemma 2 uses choice. `#print axioms` for every theorem in the two clo
 shows at most `propext` and `Quot.sound`, so the decision procedure is an algorithm rather than
 a classical existence claim.
 
+## Lemma 3 — append-only consistency
+
+`AhlProofs/Tree/Model.lean`, `AhlProofs/Tree/AppendOnly.lean`.
+
+The tree model is RFC 9162 Section 2.1 geometry with the I-D Section 2.7 domain separation, over
+the same abstract hash as Lemma 1: `M.H` is a parameter, nothing is assumed about it, and every
+clause concludes the intended property **or an exhibited collision**.
+
+| Model | Lean |
+| --- | --- |
+| Leaf hash `H(0x00 ‖ leaf)` | `leafHash` (`ahl-core` `leaf_hash`) |
+| Node hash `H(0x01 ‖ L ‖ R)` | `nodeHash` (`atl_core` `hash_children`) |
+| Largest power of two `< n` | `splitPoint` (`atl_core` `largest_power_of_2_less_than`) |
+| `MTH` over leaf hashes | `MTHh` (`atl_core` `compute_root`) |
+| `MTH` over entries | `MTH` (`ahl-core` `tree_root`) |
+| `Incl(leaf, i, n, root, π)` | `verifyInclusion` (`ahl-core` `verify_inclusion_proof`) |
+| `Consistent(m, n, r_m, r_n, π)` | `verifyConsistency` (`ahl-core` `verify_consistency_proof`) |
+| `Range(i, j, n, root, E, π)` | `verifyRange` (`ahl-core` `range_proof::verify`) |
+
+The engine of all three clauses is `mth_inj_or_collision`: two entry lists of the same length
+with the same `MTH` are the same list, or a collision of `H` has been exhibited. Its proof is
+the RFC 9162 recursion, using the same fixed-width append argument Lemma 1a uses to split a
+node preimage back into its two 32-octet children.
+
+* **Lemma 3a — consistency soundness.** `consistency_sound`: a verifying RFC 9162 consistency
+  proof from `(m, MTH(L_m))` to `(n, MTH(L_n))` shows `L_m = L_n.take m` — append-only *within
+  the view shown to the verifier* (I-D Section 8.3) — or exhibits a collision. The `m > k`
+  branch of the RFC recursion is well formed because a prefix reaching past the split has the
+  same split point (`splitPoint_eq_of_gt`, proved from `n ≤ 2 * splitPoint n`).
+* **Lemma 3b — inclusion soundness.** `inclusion_sound`: a verifying inclusion proof for `leaf`
+  at index `i` against `MTH(L)` shows `L[i]? = some leaf`, or exhibits a collision.
+* **Lemma 3c — enumeration soundness.** `range_sound`: a verifying authenticated range proof
+  over `[from, to)` shows the carried entries are the log's entries at those indexes, in order
+  (`E = (L.take to).drop from`), or exhibits a collision. This is what makes the corpus `S_C` of
+  Lemma 2 a complete prefix — "know that nothing was skipped" (I-D Section 3.1 item 5).
+* **Lemma 3d — the composition of Lemmas 2 and 3.** `affected_mono_of_consistency`: a verifying
+  consistency proof supplies exactly the hypothesis Lemma 2c needs, so `affected(t, C)` is
+  contained in `affected(t, C')`. `enumerated_closure_eq`: an authenticated enumeration of the
+  whole committed prefix carries the log's own entries, so the closure computed from the
+  enumeration is the closure over the log's true prefix. Both take the entry decoder
+  `decode : Bytes → Entry V` as a parameter — neither model parses an envelope — and hold for
+  any decoder.
+
+Three `example`s pin the verifier's shape: it accepts the empty path for a one-leaf tree and the
+sibling leaf hash for a two-leaf tree, and it **rejects an out-of-range index** — `i < n` is a
+conjunct of `verifyInclusion`, as RFC 9162 Section 2.1.3.2 requires ("if `leaf_index` is greater
+than or equal to `tree_size`, stop"). Without it the empty path would open a one-leaf tree's root
+at every index, 42 included.
+
+**Where the modelled verifiers differ from the crate, deliberately.** `verifyConsistency` accepts
+`m = n` (with an empty proof, requiring equal roots) where RFC 9162 Section 2.1.4 specifies
+`0 < first < second`: the invariants page states Lemma 3a for `0 < m ≤ n` and the page is
+followed, since Lemma 3d inherits `m ≤ n` from Lemma 2c. `verifyRange` formalises the
+recomputation and the counting conditions of `range_proof::verify`, and omits three things
+without claiming any of them redundant — the width-one cross-check through `atl-core`'s inclusion
+verifier, the `AHLRP1` serialization, and the crate's saturating `u64` arithmetic (`Nat` cannot
+overflow). Both are spelled out in the definitions' doc comments and in the boundary file.
+
+**Choice-free.** `#print axioms` for every theorem of Lemma 3 shows at most `propext` and
+`Quot.sound`. Two prelude lemmas used in the proofs (`List.take_add`, `List.drop_take`) carry
+`Classical.choice` in their own footprint, so they are reproved by induction as `take_add'` and
+`drop_take'`; and `omega` closing a non-arithmetic goal takes a classical `exfalso` path, so
+those calls are written `False.elim (by omega)` instead.
+
 ## Boundary
 
 `AhlProofs/RecordBinding/Boundary.lean` states what Lemma 1 does *not* prove: that `b` is the
 correct canonicalization of the record; that any implementation actually validates the dataset
 id; that a commitment does not disclose the record; and the collision-resistance assumption
 itself.
+
+`AhlProofs/Tree/Boundary.lean` states what Lemma 3 does *not* prove: it is about the view shown
+to the verifier and detects no split-view (I-D Section 3.3); it says nothing about whether the
+checkpoint shown is the latest published one, nothing about the checkpoint's signature or the
+log's keys (I-D Section 8.3), and nothing about the *completeness* of the RFC 9162 proof
+systems — only their soundness; the leaf construction and the parsing of entries are outside
+the model.
 
 `AhlProofs/Closure/Boundary.lean` states what Lemma 2 does *not* prove: completeness is
 relative to the declared corpus and says nothing about derivations that were never anchored
@@ -181,8 +257,15 @@ names were aligned (`commit_plain`, `commit_keyed`, `DATASET_SEPARATOR`,
 convenience and not a proof.
 
 What connects them today is **test evidence**: the conformance vector corpus of `ahl-core`
-v0.3.0 (`test_data/`, at the crate's tagged revision) exercises the implementation on named
-inputs and records what it does with them. For Lemma 2 the corresponding material is
+v0.3.1 (`test_data/`, at the crate's tagged revision) exercises the implementation on named
+inputs and records what it does with them. For Lemma 3 it is `test_data/vectors/merkle/` (`log-tree.json`, `batch-tree.json`,
+`input-set-tree.json`, `range-proof.json` among them), `test_data/vectors/checkpoints/` and the
+receipt vectors. Lemma 3 is a property of the **abstract model** in `AhlProofs/Tree/Model.lean`:
+the model follows RFC 9162 Section 2.1, the I-D Section 2.7 prefixes and the range-proof
+construction of `ahl-core/src/range_proof.rs` **by construction** — a modelling decision taken by
+reading those documents and that code, not a theorem — and neither `ahl-core` nor `atl-core` (to
+which `ahl-core` normatively delegates inclusion and consistency verification) is verified here.
+For Lemma 2 the corresponding material is
 `test_data/vectors/closure/` — six scenarios, among them `retraction-after-correction.json`
 and `supersession-chain.json`, the pair the invariants page names as the witnesses for the
 seeding distinction of Lemma 2d. For the `WF` hypothesis of Lemma 1a the witnesses

@@ -24,7 +24,7 @@ without it the `WF` hypothesis fails, the first `0x1F` need no longer end `dsid`
 distinct triples share a preimage with no hash collision involved.
 
 The evidence that the reference implementation performs the check is empirical, and stays
-empirical. In `ahl-core` v0.3.0 the two negative vectors
+empirical. In `ahl-core` v0.3.1 the two negative vectors
 `test_data/vectors/statements/malformed/dataset-id-control-octet-0x1f.json` and
 `…-0x7f.json` are the witnesses: they exercise `descriptor::validate_dataset_id` on exactly
 the two octets Section 2.6 calls out. A finite corpus of test vectors cannot show that every
@@ -53,7 +53,7 @@ Nothing here says anything about `ahl-core`'s `commit_plain`, `commit_keyed` or
 `descriptor::validate_dataset_id`. There is no extraction, no translation, and no refinement
 argument connecting the Rust code to this model; the names were aligned so the two can be read
 side by side, which is a convenience for a human reader and not a proof. The published
-conformance corpus (`ahl-core` v0.3.0, `test_data/`) is test evidence that the implementation
+conformance corpus (`ahl-core` v0.3.1, `test_data/`) is test evidence that the implementation
 behaves as the model does on the inputs the corpus names — engineering linkage, not a proved
 binding. Closing that gap needs a refinement argument; until one exists, the model results and
 the implementation results are two separate bodies of evidence about the same design

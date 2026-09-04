@@ -76,7 +76,7 @@ There is no extraction, no translation and no refinement argument connecting
 convenience for the reader and not a proof.
 
 What connects them is test evidence: the closure scenarios of the conformance corpus at
-`ahl-core` v0.3.0 — `test_data/vectors/closure/`, among them
+`ahl-core` v0.3.1 — `test_data/vectors/closure/`, among them
 `retraction-after-correction.json` and `supersession-chain.json`, the two the invariants page
 names for Lemma 2d — record what the implementation computes on those named inputs. A finite
 corpus cannot show that the implementation's traversal computes the least fixed point on every
