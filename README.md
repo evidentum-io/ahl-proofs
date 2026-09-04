@@ -1,9 +1,11 @@
 # ahl-proofs
 
 Machine-checked proofs of the AHL invariants, in Lean 4. This repository currently contains
-**Lemma 1, record binding** — the first of the three lemmas listed on the AHL invariants page
-(`ahl/docs-md/ahl-invariants.md`), whose source in the protocol document is the AHL I-D
-revision 0.4, Sections 2.6, 8.1 and 8.6.
+**Lemma 1, record binding** and **Lemma 2, revocation completeness relative to a checkpoint** —
+the first two of the three lemmas listed on the AHL invariants page
+(`ahl/docs-md/ahl-invariants.md`). Their sources in the protocol document are the AHL I-D
+revision 0.4, Sections 2.6, 8.1 and 8.6 (Lemma 1) and Sections 2.4, 5.1 to 5.4, 7.2 and the
+Section 7.5.1 erratum 4d (Lemma 2).
 
 No `sorry`. No `axiom` declaration of our own: every assumption is a parameter or a structure
 field carrying a doc comment that cites the I-D section it comes from.
@@ -15,11 +17,15 @@ lake build
 ```
 
 Toolchain: `leanprover/lean4:v4.31.0`, pinned in `lean-toolchain`. **No Mathlib**, and no
-other dependency — Lemma 1 needs only `List` facts that Lean's own prelude already provides
-(`List.append_inj`, `List.cons.injEq`, `List.mem_cons_of_mem`). A dependency-free build is
-faster to check and easier to audit, so it is kept that way for as long as the lemmas allow.
+other dependency. Lemma 1 needs only `List` facts Lean's own prelude provides
+(`List.append_inj`, `List.cons.injEq`, `List.mem_cons_of_mem`). Lemma 2 needs finite-set
+reasoning, which is where a library would normally be reached for; the two facts actually
+required — that filtering by a strictly stronger predicate shortens a list, and duplicate
+removal — are eleven and eight lines respectively (`length_filter_lt_of_witness`, `nub`), so
+the dependency-free build is kept. A dependency-free build is faster to check and easier to
+audit, so it stays that way for as long as the lemmas allow.
 
-## The model (invariants page Section 0)
+## Lemma 1 — the model (invariants page Section 0)
 
 `AhlProofs/Model.lean`.
 
@@ -39,7 +45,7 @@ The model knows nothing about JSON and nothing about the wire format. Names foll
 `ahl-core/src/lib.rs` (`commit_plain`, `commit_keyed`, `DATASET_SEPARATOR`,
 `descriptor::validate_dataset_id`) so the two can be read side by side.
 
-## Assumptions
+## Lemma 1 — assumptions
 
 1. **CR — collision resistance of SHA-256** (I-D Section 8.1). *Not* a hypothesis anywhere in
    this development, and deliberately so. Injectivity of `H` would be false; instead the
@@ -55,7 +61,7 @@ The model knows nothing about JSON and nothing about the wire format. Names foll
    `DescriptorModel.jcs_ne : D₁ ≠ D₂ → JCS D₁ ≠ JCS D₂`, derived in `Model.lean`. It is a
    parameter of the model, so every lemma that uses it says so in its own statement.
 
-## The lemmas (invariants page Section 1)
+## Lemma 1 — record binding (invariants page Section 1)
 
 `AhlProofs/RecordBinding.lean`.
 
@@ -81,12 +87,69 @@ The model knows nothing about JSON and nothing about the wire format. Names foll
 A non-vacuity check at the end of the file exhibits a well-formed dataset id, so Lemma 1a's
 hypothesis is not empty.
 
+## Lemma 2 — revocation completeness relative to a checkpoint
+
+`AhlProofs/Closure/Model.lean`, `AhlProofs/Closure/RevocationCompleteness.lean`.
+
+**No cryptographic assumption enters Lemma 2.** There is no hash, no signature and no
+parameter to instantiate: the lemma is about a finite graph computation over the prefix a
+checkpoint commits. Time does not appear either — an entry index is a list position
+(«порядок = позиция», constitution article 9) and a trigger's scope is an abstract predicate on
+an abstract valid-time type.
+
+| Model | Lean |
+| --- | --- |
+| `RecordRef = (ds, r)` | `structure RecordRef` (`dataset`, `record`) |
+| Statement kinds the closure reads | `inductive Statement` (`ingestion`, `derivation`, `retraction`, `correction`, `other`) |
+| Log entry, with the erratum-4d void flag | `structure Entry` (`statement`, `void`) |
+| Corpus under checkpoint `C`, `S_C` | `log.take treeSize` |
+| `G_C` | `edges log treeSize` |
+| `seeds(t)` | `trigger_seeds log t` |
+| `affected(t, C) = lfp F_t` | `Affected log treeSize t` (`Reaches`), computed by `affected_at` |
+
+* **Lemma 2a — existence, uniqueness, termination.** `reaches_isLeastClosed` says the affected
+  set is the least fixed point of the Section 5.1 operator: it contains the seeds, is closed
+  under scope-covered edges, and is contained in every set with those two properties.
+  `isLeastClosed_unique` says any two least fixed points coincide, so "the" affected set is
+  well defined. `exists_stable` and `mem_affected_set_iff_reaches` give termination: the Kleene
+  iteration from the seeds stabilises within `|RecordRef(G_C)| ∪ seeds` steps and its result
+  has exactly the members of the least fixed point. Cycles are no obstacle — the iteration is
+  over a set, not over paths (I-D Section 5.4, "MUST NOT loop").
+* **Lemma 2b — determinism, and decidability of disagreement.** `affected_of_prefix_eq`: two
+  verifiers holding the same prefix `S_C` compute the same affected set. Order-freeness is
+  built in — the specification is the inductive `Reaches`, and 2a says any least fixed point
+  whatsoever equals it, so no traversal order can matter. `agreement_iff` with
+  `instDecidableAgreement` makes the comparison against an anchored disposition list a decidable
+  finite check.
+* **Lemma 2c — monotonicity in the checkpoint.** `affected_mono`: for `C' ⊒ C` the affected set
+  at `C` is contained in the one at `C'`. A later checkpoint only adds edges (`edges_mono`), and
+  the closure is monotone in the edge set (`reaches_mono_edges`).
+* **Lemma 2d — the seeding rules genuinely differ.** `seeding_rules_differ` and
+  `affected_retraction_ne_correction` exhibit a corpus in which, with one and the same scope, a
+  retraction on `X` and a correction of `X` have different affected sets: the correction seeds
+  the superseded replacement `Xold` and reaches its consumer, the retraction does not. Section
+  5.1 cannot be collapsed into one seeding rule. The witness is the shape of the corpus scenario
+  `retraction-after-correction.json` and its contrast `supersession-chain.json`.
+
+Void entries (I-D Section 7.5.1 erratum 4d, "never effective and never traversed") are part of
+the model: `edgesOf_void`, `trigger_seeds_void`, `not_affected_of_void_trigger` and
+`edges_cons_void` state that a void entry contributes no edge, no seed, and no affected record.
+
 ## Boundary
 
-`AhlProofs/RecordBinding/Boundary.lean` states what is *not* proved: that `b` is the correct
-canonicalization of the record; that any implementation actually validates the dataset id;
-that a commitment does not disclose the record; and the collision-resistance assumption
-itself. The invariants page requires a boundary for every lemma (AHL constitution, article 8).
+`AhlProofs/RecordBinding/Boundary.lean` states what Lemma 1 does *not* prove: that `b` is the
+correct canonicalization of the record; that any implementation actually validates the dataset
+id; that a commitment does not disclose the record; and the collision-resistance assumption
+itself.
+
+`AhlProofs/Closure/Boundary.lean` states what Lemma 2 does *not* prove: completeness is
+relative to the declared corpus and says nothing about derivations that were never anchored
+(I-D Section 5.3); that the prefix a verifier holds is the log's true prefix is Lemma 3's
+business, not Lemma 2's; nothing about publication completeness or split-view
+(I-D Section 3.3); nothing about which entries are void or which triggers are authorized; and
+nothing about time.
+
+The invariants page requires a boundary for every lemma (AHL constitution, article 8).
 
 ## Relationship to the reference implementation
 
@@ -98,7 +161,10 @@ convenience and not a proof.
 
 What connects them today is **test evidence**: the conformance vector corpus of `ahl-core`
 v0.3.0 (`test_data/`, at the crate's tagged revision) exercises the implementation on named
-inputs and records what it does with them. For the `WF` hypothesis of Lemma 1a the witnesses
+inputs and records what it does with them. For Lemma 2 the corresponding material is
+`test_data/vectors/closure/` — six scenarios, among them `retraction-after-correction.json`
+and `supersession-chain.json`, the pair the invariants page names as the witnesses for the
+seeding distinction of Lemma 2d. For the `WF` hypothesis of Lemma 1a the witnesses
 are the two negative vectors
 `test_data/vectors/statements/malformed/dataset-id-control-octet-0x1f.json` and
 `test_data/vectors/statements/malformed/dataset-id-control-octet-0x7f.json`, which drive
