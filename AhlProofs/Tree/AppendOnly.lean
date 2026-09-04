@@ -168,7 +168,7 @@ theorem inclusion_sound_aux (M : HashModel Key) :
       hs[i]? = some leafH ∨ ∃ x y, Collision M.H x y := by
   intro N
   induction N with
-  | zero => intro hs _ i _ hle hi _; omega
+  | zero => intro hs _ i _ hle hi _; exact False.elim (by omega)
   | succ N ih =>
     intro hs leafH i path hle hi h
     by_cases h1 : hs.length = 1
@@ -286,7 +286,7 @@ theorem consistency_sound_aux (M : HashModel Key) :
       Lm = Ln.take m ∨ ∃ x y, Collision M.H x y := by
   intro N
   induction N with
-  | zero => intro _ _ m n _ _ _ hle _ _ hm hmn _ _; omega
+  | zero => intro _ _ m n _ _ _ hle _ _ hm hmn _ _; exact False.elim (by omega)
   | succ N ih =>
     intro Lm Ln m n b seed proof hle hlm hln hm hmn hb h
     by_cases heqmn : m = n
@@ -378,7 +378,8 @@ theorem consistency_sound_aux (M : HashModel Key) :
                     _ = Ln.take m := by
                         have hsplit : Ln.take (splitPoint n + (m - splitPoint n)) =
                             Ln.take (splitPoint n) ++
-                              (Ln.drop (splitPoint n)).take (m - splitPoint n) := List.take_add
+                              (Ln.drop (splitPoint n)).take (m - splitPoint n) :=
+                          take_add' _ _ _
                         rw [show splitPoint n + (m - splitPoint n) = m from by omega] at hsplit
                         exact hsplit.symm
                 · exact Or.inr hc
@@ -442,7 +443,7 @@ theorem range_sound_aux (M : HashModel Key) :
   induction N with
   | zero =>
     intro _ _ _ to offset size _ _ _ hle _ _ _ _ _
-    exact Or.inl (fun i _ _ _ h4 => by omega)
+    exact Or.inl (fun i _ _ _ h4 => False.elim (by omega))
   | succ N ih =>
     intro L E fr to offset size nodes rest d hle hL hE hfr hrun hd
     match hcl : classify offset size fr to with
@@ -450,7 +451,7 @@ theorem range_sound_aux (M : HashModel Key) :
       refine Or.inl (fun i h1 h2 h3 h4 => ?_)
       simp only [classify] at hcl
       split at hcl
-      · omega
+      · exact False.elim (by omega)
       · split at hcl <;> simp at hcl
     | .inside =>
       rw [rangeRoot_inside M fr to E offset size nodes hcl] at hrun
@@ -502,7 +503,7 @@ theorem range_sound_aux (M : HashModel Key) :
               rw [List.take_take, Nat.min_eq_left (by omega)]
             have hRight : ((L.drop offset).take size).drop (splitPoint size)
                 = (L.drop (offset + splitPoint size)).take (size - splitPoint size) := by
-              rw [List.drop_take, List.drop_drop]
+              rw [drop_take', List.drop_drop]
             rw [hLeft, hRight] at hd
             rcases node_eq_or_collision M (hrun.1 ▸ hd : nodeHash M l r
                 = nodeHash M (MTH M ((L.drop offset).take (splitPoint size)))
@@ -602,5 +603,26 @@ theorem enumerated_closure_eq {V : Type} (M : HashModel Key) (decode : Bytes →
   · refine Or.inl ?_
     rw [hE, List.drop_zero, List.take_of_length_le (by omega)]
   · exact Or.inr hc
+
+/-! ## Non-vacuity
+
+The soundness lemmas would hold vacuously if no proof ever verified. These two examples show
+the verifier accepting genuine inclusion proofs, and pin the `splitPoint` arithmetic. -/
+
+/-- A one-leaf tree: the empty path opens the root. -/
+example (M : HashModel Key) (b : Bytes) : verifyInclusion M b 0 1 (MTH M [b]) [] := by
+  simp only [verifyInclusion, List.reverse_nil, rootFromPath_one, MTH, List.map_cons,
+    List.map_nil, MTHh_singleton]
+
+/-- A two-leaf tree: the sibling leaf hash opens the root for the left leaf. -/
+example (M : HashModel Key) (a b : Bytes) :
+    verifyInclusion M a 0 2 (MTH M [a, b]) [leafHash M b] := by
+  have hsplit : splitPoint 2 = 1 := rfl
+  simp only [verifyInclusion, List.reverse_cons, List.reverse_nil, List.nil_append]
+  rw [rootFromPath_cons M (leafHash M a) (by omega) (leafHash M b) [], hsplit, if_pos (by omega),
+    rootFromPath_one, MTH_eq_node M (by simp)]
+  simp only [Option.map_some, List.length_cons, List.length_nil, hsplit, List.take_succ_cons,
+    List.take_zero, List.drop_succ_cons, List.drop_zero, MTH, List.map_cons, List.map_nil,
+    MTHh_singleton]
 
 end AhlProofs.Tree

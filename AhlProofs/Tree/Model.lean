@@ -27,6 +27,31 @@ open AhlProofs
 
 variable {Key : Type}
 
+/-! ## Two list facts, reproved
+
+`List.take_add` and `List.drop_take` are in Lean's prelude, but both are proved there with
+`Classical.choice` in their dependency footprint. They are used in the proofs of Lemmas 3a and
+3c, and reproving them by induction — a dozen lines each — keeps the whole of Lemma 3 free of
+choice. -/
+
+theorem take_add' {α : Type} : ∀ (i j : Nat) (l : List α),
+    l.take (i + j) = l.take i ++ (l.drop i).take j
+  | 0, _, _ => by simp
+  | _ + 1, _, [] => by simp
+  | i + 1, j, x :: xs => by
+    rw [show i + 1 + j = (i + j) + 1 from by omega]
+    simp only [List.take_succ_cons, List.drop_succ_cons, List.cons_append]
+    rw [take_add' i j xs]
+
+theorem drop_take' {α : Type} : ∀ (i j : Nat) (l : List α),
+    (l.take j).drop i = (l.drop i).take (j - i)
+  | 0, _, _ => by simp
+  | _ + 1, _, [] => by simp
+  | _ + 1, 0, _ :: _ => by simp
+  | i + 1, j + 1, x :: xs => by
+    simp only [List.take_succ_cons, List.drop_succ_cons, Nat.succ_sub_succ]
+    exact drop_take' i j xs
+
 /-! ## The RFC 9162 split -/
 
 /-- The largest power of two strictly less than `n`, for `n ≥ 2` — the RFC 9162 Section 2.1
