@@ -19,11 +19,18 @@ different bytes; the lemmas say nothing about whether it should have.
 ## Not proved: that an implementation validates the dataset id
 
 Lemma 1a assumes `WF dsid`. It does not — cannot — establish that any implementation rejects
-a dataset id carrying `0x1F` or `0x7F`. That obligation is discharged by the conformance
-corpus, and Lemma 1a is precisely the argument for why the two negative vectors
-`dataset-id-control-octet-0x1f` and `dataset-id-control-octet-0x7f` must be in the v1.0
-corpus: without the check the `WF` hypothesis fails, the first `0x1F` need no longer end
-`dsid`, and two distinct triples share a preimage with no hash collision involved.
+a dataset id carrying `0x1F` or `0x7F`. What Lemma 1a supplies is the reason the check matters:
+without it the `WF` hypothesis fails, the first `0x1F` need no longer end `dsid`, and two
+distinct triples share a preimage with no hash collision involved.
+
+The evidence that the reference implementation performs the check is empirical, and stays
+empirical. In `ahl-core` v0.3.0 the two negative vectors
+`test_data/vectors/statements/malformed/dataset-id-control-octet-0x1f.json` and
+`…-0x7f.json` are the witnesses: they exercise `descriptor::validate_dataset_id` on exactly
+the two octets Section 2.6 calls out. A finite corpus of test vectors cannot show that every
+path through an implementation validates `WF`, nor that its preimage construction refines
+`AhlProofs.pre`. It shows that the named inputs are rejected at the named revision, and no
+more. The word "bound" is reserved here for a refinement argument, which does not exist yet.
 
 ## Not proved: anything about disclosure
 
@@ -40,9 +47,15 @@ development. Likewise the reduction of HMAC-SHA-256 collision resistance to that
 (I-D Section 2.6, RFC 6234 nesting) is cited, not formalized: `commit_keyed_collision`
 concludes a collision of `HMAC k` itself.
 
-## Not proved: the relationship to the reference implementation
+## Not proved: any relationship to the reference implementation
 
-`ahl-core`'s `commit_plain`, `commit_keyed` and `descriptor::validate_dataset_id` are bound to
-this model by the published conformance vectors, not by extraction or translation (invariants
-page Section 5, planned I-D Section 8.7.6).
+Nothing here says anything about `ahl-core`'s `commit_plain`, `commit_keyed` or
+`descriptor::validate_dataset_id`. There is no extraction, no translation, and no refinement
+argument connecting the Rust code to this model; the names were aligned so the two can be read
+side by side, which is a convenience for a human reader and not a proof. The published
+conformance corpus (`ahl-core` v0.3.0, `test_data/`) is test evidence that the implementation
+behaves as the model does on the inputs the corpus names — engineering linkage, not a proved
+binding. Closing that gap needs a refinement argument; until one exists, the model results and
+the implementation results are two separate bodies of evidence about the same design
+(invariants page Section 5, planned I-D Section 8.7.6).
 -/

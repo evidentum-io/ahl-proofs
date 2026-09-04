@@ -51,8 +51,9 @@ The model knows nothing about JSON and nothing about the wire format. Names foll
    SHA-256 by the RFC 6234 nesting is cited, not formalized.
 3. **JCS-INJ — injectivity of RFC 8785 canonicalization on I-JSON values** (invariants page
    Section 0; I-D Section 2.6). The one assumption that *is* a hypothesis, as the field
-   `DescriptorModel.jcs_inj : ∀ D₁ D₂, D₁ ≠ D₂ → JCS D₁ ≠ JCS D₂`. It is a parameter of the
-   model, so every lemma that uses it says so in its own statement.
+   `DescriptorModel.jcs_inj : Function.Injective JCS`. Lemma 1c consumes its contrapositive,
+   `DescriptorModel.jcs_ne : D₁ ≠ D₂ → JCS D₁ ≠ JCS D₂`, derived in `Model.lean`. It is a
+   parameter of the model, so every lemma that uses it says so in its own statement.
 
 ## The lemmas (invariants page Section 1)
 
@@ -89,9 +90,26 @@ itself. The invariants page requires a boundary for every lemma (AHL constitutio
 
 ## Relationship to the reference implementation
 
-These are properties of the **model**. The reference implementation (`ahl-core`) is bound to
-the verified model by the **published conformance vector corpus, not by extraction** — this is
-the sentence planned for I-D Section 8.7.6 (invariants page Section 5). Lemma 1a is in
-particular the argument for why the negative vectors `dataset-id-control-octet-0x1f` and
-`dataset-id-control-octet-0x7f` are mandatory in the v1.0 corpus: they are what discharges the
-`WF` hypothesis on the implementation side.
+These are properties of the **model**, and of nothing else. There is no extraction, no
+translation, and no refinement argument connecting `ahl-core` to the definitions here; the
+names were aligned (`commit_plain`, `commit_keyed`, `DATASET_SEPARATOR`,
+`descriptor::validate_dataset_id`) so a reader can hold the two side by side, which is a
+convenience and not a proof.
+
+What connects them today is **test evidence**: the conformance vector corpus of `ahl-core`
+v0.3.0 (`test_data/`, at the crate's tagged revision) exercises the implementation on named
+inputs and records what it does with them. For the `WF` hypothesis of Lemma 1a the witnesses
+are the two negative vectors
+`test_data/vectors/statements/malformed/dataset-id-control-octet-0x1f.json` and
+`test_data/vectors/statements/malformed/dataset-id-control-octet-0x7f.json`, which drive
+`descriptor::validate_dataset_id` with exactly the two octets I-D Section 2.6 singles out.
+Lemma 1a is the argument for why those two vectors matter — remove the check and distinct
+triples share a preimage with no hash collision involved.
+
+That is engineering linkage, not a proved binding. A finite corpus cannot establish that every
+path through an implementation validates `WF`, nor that its preimage construction refines
+`AhlProofs.pre`; it establishes that the named inputs produce the named results at the named
+revision. The word **bound** is reserved for a refinement argument, which does not exist yet.
+Until one does, the Lean results and the corpus results are two separate bodies of evidence
+about the same design — which is what invariants page Section 5 and the planned I-D
+Section 8.7.6 should be read as saying.
