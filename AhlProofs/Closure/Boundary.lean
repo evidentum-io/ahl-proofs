@@ -42,6 +42,15 @@ published one, and nothing about a log presenting different views to different p
 (I-D Section 3.3). Those are the witness protocol's concern and are outside Lemma 2 exactly as
 they are outside Lemma 3's statement.
 
+## Nothing about cycle detection or reporting
+
+I-D Section 5.4 places a separate duty on producers: a propagation MUST NOT loop, MUST
+disposition each record once, and SHOULD surface cycles. Lemma 2 establishes termination of the
+closure computation and a duplicate-free result over a corpus that may contain cycles; it says
+nothing about DETECTING a cycle, reporting it, or the producer-side obligation to surface one.
+A self-loop is structurally harmless to the computation (`demoLoopLog`), which is exactly why
+its detection is a duty the model does not carry.
+
 ## Nothing about void entries beyond their exclusion
 
 `edgesOf_void`, `trigger_seeds_void`, `edges_cons_void` and `not_affected_of_void_trigger` say
