@@ -204,8 +204,20 @@ node preimage back into its two 32-octet children.
   `decode : Bytes → Entry V` as a parameter — neither model parses an envelope — and hold for
   any decoder.
 
-Two `example`s pin non-vacuity: the verifier accepts the empty path for a one-leaf tree and the
-sibling leaf hash for a two-leaf tree.
+Three `example`s pin the verifier's shape: it accepts the empty path for a one-leaf tree and the
+sibling leaf hash for a two-leaf tree, and it **rejects an out-of-range index** — `i < n` is a
+conjunct of `verifyInclusion`, as RFC 9162 Section 2.1.3.2 requires ("if `leaf_index` is greater
+than or equal to `tree_size`, stop"). Without it the empty path would open a one-leaf tree's root
+at every index, 42 included.
+
+**Where the modelled verifiers differ from the crate, deliberately.** `verifyConsistency` accepts
+`m = n` (with an empty proof, requiring equal roots) where RFC 9162 Section 2.1.4 specifies
+`0 < first < second`: the invariants page states Lemma 3a for `0 < m ≤ n` and the page is
+followed, since Lemma 3d inherits `m ≤ n` from Lemma 2c. `verifyRange` formalises the
+recomputation and the counting conditions of `range_proof::verify`, and omits three things
+without claiming any of them redundant — the width-one cross-check through `atl-core`'s inclusion
+verifier, the `AHLRP1` serialization, and the crate's saturating `u64` arithmetic (`Nat` cannot
+overflow). Both are spelled out in the definitions' doc comments and in the boundary file.
 
 **Choice-free.** `#print axioms` for every theorem of Lemma 3 shows at most `propext` and
 `Quot.sound`. Two prelude lemmas used in the proofs (`List.take_add`, `List.drop_take`) carry
@@ -248,8 +260,12 @@ What connects them today is **test evidence**: the conformance vector corpus of 
 v0.3.1 (`test_data/`, at the crate's tagged revision) exercises the implementation on named
 inputs and records what it does with them. For Lemma 3 it is `test_data/vectors/merkle/` (`log-tree.json`, `batch-tree.json`,
 `input-set-tree.json`, `range-proof.json` among them), `test_data/vectors/checkpoints/` and the
-receipt vectors — and Lemma 3 is a property of `atl-core`, to which `ahl-core` normatively
-delegates inclusion and consistency verification. For Lemma 2 the corresponding material is
+receipt vectors. Lemma 3 is a property of the **abstract model** in `AhlProofs/Tree/Model.lean`:
+the model follows RFC 9162 Section 2.1, the I-D Section 2.7 prefixes and the range-proof
+construction of `ahl-core/src/range_proof.rs` **by construction** — a modelling decision taken by
+reading those documents and that code, not a theorem — and neither `ahl-core` nor `atl-core` (to
+which `ahl-core` normatively delegates inclusion and consistency verification) is verified here.
+For Lemma 2 the corresponding material is
 `test_data/vectors/closure/` — six scenarios, among them `retraction-after-correction.json`
 and `supersession-chain.json`, the pair the invariants page names as the witnesses for the
 seeding distinction of Lemma 2d. For the `WF` hypothesis of Lemma 1a the witnesses

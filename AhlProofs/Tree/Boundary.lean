@@ -56,26 +56,49 @@ because neither model performs it.
 Leaf ordering ("sorted by `record`") and the prohibition on duplicate leaves are manifest and
 producer duties checked elsewhere; `MTH` hashes the list it is given, in the order it is given.
 
+## Not proved: the accepted set of the modelled range verifier is the crate's
+
+`verifyRange` formalises the recomputation of `range_proof.rs` together with its counting
+conditions: a non-empty sub-range of `[0, n)`, exactly `to - from` carried entries, every carried
+subtree hash consumed, and the recomputation opening the root. Three things in the crate's
+`verify` have no counterpart here, and **no claim of redundancy is made for any of them**: the
+width-one cross-check through `atl_core`'s inclusion verifier (an anti-drift guard), the
+`AHLRP1` serialization, and the crate's saturating `u64` arithmetic. See the doc comment on
+`AhlProofs.Tree.verifyRange`.
+
+## A deliberate widening: `m = n` in the consistency verifier
+
+RFC 9162 Section 2.1.4 specifies a consistency proof for `0 < first < second`; the invariants
+page states Lemma 3a for `0 < m ≤ n`, and the page is what is followed. `verifyConsistency`
+therefore accepts `m = n` with an empty proof list, in which case it requires the two roots to
+be equal, and `consistency_sound` proves the prefix property for that case like any other. The
+widening is documented rather than removed because Lemma 3d inherits `m ≤ n` from Lemma 2c,
+whose monotonicity is stated for `n ≤ n'` including equality. A verifier wanting RFC-strict
+behaviour adds `m < n`; nothing here depends on the wider domain.
+
 ## Relationship to the reference implementation
 
-Lemma 3 is a property of **`atl-core`**, not of `ahl-core`: `ahl-core` normatively delegates
-inclusion and consistency verification to `atl_core::core::merkle` (the "anti-drift" rule in
-`ahl-core/src/lib.rs`), and only the range-proof recursion is local to `ahl-core`
-(`range_proof.rs`, which still takes every hash it computes from `atl-core`).
+Lemma 3 is a property of the **abstract model in `AhlProofs/Tree/Model.lean`** — of `MTH`,
+`verifyInclusion`, `verifyConsistency` and `verifyRange` as defined there. The model follows RFC
+9162 Section 2.1 and the I-D Section 2.7 prefixes by construction, and its range proof follows
+the construction `ahl-core/src/range_proof.rs` implements for the adaptor profile
+`ahl-test-log-v1`; that correspondence was established by reading those documents and that code,
+which is a modelling decision and not a theorem.
 
-There is no extraction, no translation and no refinement argument connecting either crate to
-these definitions. Names were aligned (`leaf_hash`, `tree_root`, `verify_inclusion_proof`,
-`verify_consistency_proof`, `range_proof::verify`) so the two can be read side by side, which
-is a convenience for the reader and not a proof.
+There is no extraction, no translation and no refinement argument connecting any crate to these
+definitions — not `ahl-core`, and not `atl-core`, to which `ahl-core` normatively delegates
+inclusion and consistency verification (the "anti-drift" rule in `ahl-core/src/lib.rs`) and which
+this development likewise does not verify. Names were aligned (`leaf_hash`, `tree_root`,
+`verify_inclusion_proof`, `verify_consistency_proof`, `range_proof::verify`) so the two can be
+read side by side, which is a convenience for the reader and not a proof.
 
-What connects them is test evidence: the conformance corpus at `ahl-core` v0.3.1 —
+What connects them is empirical evidence: the conformance corpus at `ahl-core` v0.3.1 —
 `test_data/vectors/merkle/` (among them `log-tree.json`, `batch-tree.json`,
 `input-set-tree.json` and `range-proof.json`), `test_data/vectors/checkpoints/` and the receipt
 vectors — records what the implementations compute on named inputs. A finite corpus cannot show
 that either crate's verifier is sound on every input, nor that its proof serialization refines
 the path and node lists here. It shows that the named inputs produce the named results at the
 named revision, and no more. The word "bound" is reserved for a refinement argument, which does
-not exist yet. This is what the invariants page directs Section 8 to say: "the reference
-implementation is bound to the verified model by the published vector corpus, not by
-extraction".
+not exist yet. This is the sense in which the invariants page directs Section 8 to speak of the
+reference implementation and the published vector corpus.
 -/
