@@ -223,13 +223,13 @@ theorem inclusion_sound_aux (M : HashModel Key) :
 index `i` against the root of a leaf list `L` shows that `leaf` really is `L`'s `i`-th entry —
 or exhibits a collision of `H`. -/
 theorem inclusion_sound (M : HashModel Key) {L : List Bytes} {leaf : Bytes} {i : Nat}
-    {path : List Digest} (hi : i < L.length)
-    (h : verifyInclusion M leaf i L.length (MTH M L) path) :
+    {path : List Digest} (h : verifyInclusion M leaf i L.length (MTH M L) path) :
     L[i]? = some leaf ∨ ∃ x y, Collision M.H x y := by
+  obtain ⟨hi, hroot⟩ := h
   have hmap : (L.map (leafHash M)).length = L.length := List.length_map _
   rcases inclusion_sound_aux M (L.map (leafHash M)).length (L.map (leafHash M))
       (leafHash M leaf) i path.reverse (Nat.le_refl _) (by omega)
-      (by rw [hmap]; exact h) with hres | hc
+      (by rw [hmap]; exact hroot) with hres | hc
   · rw [List.getElem?_map] at hres
     obtain ⟨a, ha, hleaf⟩ := Option.map_eq_some_iff.mp hres
     rcases leaf_eq_or_collision M hleaf with rfl | hc
@@ -611,18 +611,31 @@ the verifier accepting genuine inclusion proofs, and pin the `splitPoint` arithm
 
 /-- A one-leaf tree: the empty path opens the root. -/
 example (M : HashModel Key) (b : Bytes) : verifyInclusion M b 0 1 (MTH M [b]) [] := by
-  simp only [verifyInclusion, List.reverse_nil, rootFromPath_one, MTH, List.map_cons,
-    List.map_nil, MTHh_singleton]
+  refine ⟨by omega, ?_⟩
+  simp only [List.reverse_nil, rootFromPath_one, MTH, List.map_cons, List.map_nil,
+    MTHh_singleton]
 
 /-- A two-leaf tree: the sibling leaf hash opens the root for the left leaf. -/
 example (M : HashModel Key) (a b : Bytes) :
     verifyInclusion M a 0 2 (MTH M [a, b]) [leafHash M b] := by
   have hsplit : splitPoint 2 = 1 := rfl
-  simp only [verifyInclusion, List.reverse_cons, List.reverse_nil, List.nil_append]
+  refine ⟨by omega, ?_⟩
+  simp only [List.reverse_cons, List.reverse_nil, List.nil_append]
   rw [rootFromPath_cons M (leafHash M a) (by omega) (leafHash M b) [], hsplit, if_pos (by omega),
     rootFromPath_one, MTH_eq_node M (by simp)]
   simp only [Option.map_some, List.length_cons, List.length_nil, hsplit, List.take_succ_cons,
     List.take_zero, List.drop_succ_cons, List.drop_zero, MTH, List.map_cons, List.map_nil,
     MTHh_singleton]
+
+/-- Regression for the index bound (RFC 9162 Section 2.1.3.2, "if `leaf_index` is greater than or
+equal to `tree_size`, stop"): an out-of-range index is rejected however the recomputation turns
+out. Before the bound was part of `verifyInclusion`, the empty path opened the root of a one-leaf
+tree at *every* index, index 42 included.
+
+The statement is proved rather than `decide`d because `M.H` is an abstract parameter — nothing in
+this model computes a digest, and `Digest` carries no decidable equality — so the theorem quantifies
+over every hash model instead of checking one. -/
+example (M : HashModel Key) (b : Bytes) : ¬ verifyInclusion M b 42 1 (MTH M [b]) [] :=
+  fun h => absurd h.1 (by omega)
 
 end AhlProofs.Tree

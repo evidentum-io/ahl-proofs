@@ -179,10 +179,15 @@ decreasing_by
 
 /-- `Incl(leaf, i, n, root, π)` of the invariants page: the inclusion proof for entry `leaf` at
 index `i` of a tree of size `n` opens `root` (`ahl-core` `verify_inclusion_proof`). The path is
-in RFC order. -/
+in RFC order.
+
+The index bound is part of the verifier, not an afterthought: RFC 9162 Section 2.1.3.2 rejects a
+proof whose `leaf_index` is not less than `tree_size` ("if `leaf_index` is greater than or equal
+to `tree_size`, stop"). Without it the recomputation would accept an out-of-range index whenever
+the path happens to open the root — for a one-leaf tree, every index does. -/
 def verifyInclusion (M : HashModel Key) (leaf : Bytes) (i n : Nat) (root : Digest)
     (path : List Digest) : Prop :=
-  rootFromPath M (leafHash M leaf) i n path.reverse = some root
+  i < n ∧ rootFromPath M (leafHash M leaf) i n path.reverse = some root
 
 /-! ## Consistency proofs (RFC 9162 Section 2.1.4)
 
@@ -218,7 +223,17 @@ decreasing_by
     omega
 
 /-- `Consistent(m, n, r_m, r_n, π)` of the invariants page: the RFC 9162 consistency proof
-verifies (`ahl-core` `verify_consistency_proof`). The proof list is in RFC order. -/
+verifies (`ahl-core` `verify_consistency_proof`). The proof list is in RFC order.
+
+-- AMBIGUITY: RFC 9162 Section 2.1.4 specifies a consistency proof for `0 < first < second`
+-- (strict growth, non-empty proof), while the invariants page states Lemma 3a for `0 < m ≤ n`.
+-- The page is followed: the `m = n` case is accepted, with `b = true` and an empty proof list,
+-- and it then requires the two roots to be equal — which is exactly what a verifier holding one
+-- checkpoint twice should conclude. The extension is deliberate and sound rather than
+-- overlooked: `consistency_sound` proves the prefix property for it like any other case, and
+-- Lemma 3d's composition inherits `m ≤ n` from Lemma 2c, whose monotonicity is stated for
+-- `n ≤ n'` including equality. A verifier that wants RFC-strict behaviour adds `m < n`; nothing
+-- below depends on the wider domain being available. -/
 def verifyConsistency (M : HashModel Key) (m n : Nat) (rm rn : Digest)
     (proof : List Digest) : Prop :=
   consistencyRoots M rm m n true proof.reverse = some (rm, rn)
@@ -279,9 +294,25 @@ decreasing_by
     omega
 
 /-- `Range(from, to, n, root, E, π)` of the invariants page: the authenticated range proof
-verifies (`ahl-core` `range_proof::verify`). Every carried subtree hash must be consumed, the
-carried entry count must equal the range width, and the recomputation must open the
-checkpoint root. -/
+verifies (`ahl-core` `range_proof::verify`). Every carried subtree hash must be consumed (the
+recomputation must leave the node list empty), the carried entry count must equal the range
+width, the range must be a non-empty sub-range of `[0, n)`, and the recomputation must open the
+checkpoint root.
+
+**What this omits, relative to `range_proof.rs`.** Three things in the crate's `verify` have no
+counterpart here, and none of them is claimed to be redundant:
+
+* the **width-one cross-check** — for `to - from = 1` the crate additionally rebuilds an
+  inclusion path from the walk and re-verifies it through `atl_core::core::merkle::verify_inclusion`,
+  an anti-drift guard against the two constructions diverging. Reading `range_proof.rs`, it is
+  applied as a further condition on an already-accepted proof; whether it ever rejects a proof
+  this model accepts is a question about that code, which nothing here verifies;
+* the **serialization** — the `AHLRP1` magic, the `u64` fields and the node-count header of the
+  adaptor profile. This model takes a parsed proof;
+* the crate's **saturating arithmetic**, which exists because its indices are `u64`. `Nat` cannot
+  overflow, so there is nothing to formalise.
+
+The lemma below is therefore about the recomputation and the counting conditions stated here. -/
 def verifyRange (M : HashModel Key) («from» to n : Nat) (root : Digest) (entries : List Bytes)
     (nodes : List Digest) : Prop :=
   «from» < to ∧ to ≤ n ∧ entries.length = to - «from» ∧
