@@ -105,25 +105,42 @@ an abstract valid-time type.
 | Corpus under checkpoint `C`, `S_C` | `log.take treeSize` |
 | `G_C` | `edges log treeSize` |
 | `seeds(t)` | `trigger_seeds log t` |
-| `affected(t, C) = lfp F_t` | `Affected log treeSize t` (`Reaches`), computed by `affected_at` |
+| `lfp F_t` — reachability from the seeds, seeds included | `ClosureReach`, computed by `closure_reach` |
+| `affected(t, C)` — the affected set, seeds excluded | `AffectedSet`; at a checkpoint, `Affected log treeSize t`, computed by `affected_at` |
 
-* **Lemma 2a — existence, uniqueness, termination.** `reaches_isLeastClosed` says the affected
-  set is the least fixed point of the Section 5.1 operator: it contains the seeds, is closed
-  under scope-covered edges, and is contained in every set with those two properties.
-  `isLeastClosed_unique` says any two least fixed points coincide, so "the" affected set is
-  well defined. `exists_stable` and `mem_affected_set_iff_reaches` give termination: the Kleene
-  iteration from the seeds stabilises within `|RecordRef(G_C)| ∪ seeds` steps and its result
-  has exactly the members of the least fixed point. Cycles are no obstacle — the iteration is
-  over a set, not over paths (I-D Section 5.4, "MUST NOT loop").
+**Seeds are not affected records.** `ClosureReach` is reachability from the seeds with the
+seeds included — the least fixed point the traversal computes — and `AffectedSet` is that
+closure *minus the seeds*, following I-D Section 5.1 as corrected on 2026-09-04 and `ahl-core`
+("Seeds are never members of `Closure::affected`"). A seed is the record the trigger acts on
+and the trigger itself dispositions it. Every clause below is stated about `AffectedSet`.
+
+* **Lemma 2a — existence, uniqueness, termination.** `closureReach_isLeastClosed` says the
+  closure is the least fixed point of the Section 5.1 operator: it contains the seeds, is
+  closed under scope-covered edges, and is contained in every set with those two properties.
+  `isLeastClosed_unique` says any two least fixed points coincide, so "the" closure — and with
+  it the affected set — is well defined. `exists_stable`, `mem_closure_reach_iff` and
+  `mem_affected_set_iff` give termination: the Kleene iteration from the seeds stabilises
+  within `|RecordRef(G_C) ∪ seeds|` steps (the page's bound, amended 2026-09-04) and its result
+  has exactly the members of the least fixed point. The stable stage is found by bounded search,
+  so the proof is constructive: no clause of Lemma 2 depends on `Classical.choice`. Cycles are
+  no obstacle — the iteration is over a set, not over paths (I-D Section 5.4, "MUST NOT loop").
+* **Each record once.** `nodup_level`, `nodup_closure_reach`, `nodup_affected_set` and
+  `nodup_affected_at`: every stage of the iteration and both computed sets are duplicate-free,
+  which is what I-D Section 5.4 ("dispositions each record once") requires. A self-loop or two
+  derivations producing one record cannot list it twice.
 * **Lemma 2b — determinism, and decidability of disagreement.** `affected_of_prefix_eq`: two
   verifiers holding the same prefix `S_C` compute the same affected set. Order-freeness is
-  built in — the specification is the inductive `Reaches`, and 2a says any least fixed point
-  whatsoever equals it, so no traversal order can matter. `agreement_iff` with
-  `instDecidableAgreement` makes the comparison against an anchored disposition list a decidable
-  finite check.
+  built in — the specification is the inductive `ClosureReach`, and 2a says any least fixed
+  point whatsoever equals it, so no traversal order can matter. The comparison against the
+  anchored disposition list is not merely "decidable in principle": `dispositionsAgree` is a
+  Boolean function of two finite lists — a duplicate check on the claim plus a bidirectional
+  subset check — and `dispositionsAgree_iff` proves it equivalent to "the claim lists each
+  affected record once and nothing else".
 * **Lemma 2c — monotonicity in the checkpoint.** `affected_mono`: for `C' ⊒ C` the affected set
   at `C` is contained in the one at `C'`. A later checkpoint only adds edges (`edges_mono`), and
-  the closure is monotone in the edge set (`reaches_mono_edges`).
+  the closure is monotone in the edge set (`closureReach_mono_edges`). The checkpoint must
+  commit the trigger, which `Affected` carries as the conjunct `t < tree_size`
+  (I-D Section 5.1); `C' ⊒ C` preserves it.
 * **Lemma 2d — the seeding rules genuinely differ.** `seeding_rules_differ` and
   `affected_retraction_ne_correction` exhibit a corpus in which, with one and the same scope, a
   retraction on `X` and a correction of `X` have different affected sets: the correction seeds
@@ -134,6 +151,10 @@ an abstract valid-time type.
 Void entries (I-D Section 7.5.1 erratum 4d, "never effective and never traversed") are part of
 the model: `edgesOf_void`, `trigger_seeds_void`, `not_affected_of_void_trigger` and
 `edges_cons_void` state that a void entry contributes no edge, no seed, and no affected record.
+
+Nothing in Lemma 2 uses choice. `#print axioms` for every theorem in the two closure modules
+shows at most `propext` and `Quot.sound`, so the decision procedure is an algorithm rather than
+a classical existence claim.
 
 ## Boundary
 

@@ -17,9 +17,19 @@ assertion, auditable by comparing the declared inclusion and exclusion lists aga
 organization's actual systems." That is an audit question, not a cryptographic one, and no
 theorem here touches it.
 
+## The affected set excludes the seeds, and that is a modelling commitment
+
+`AffectedSet` is `ClosureReach` minus the seeds, following I-D Section 5.1 as corrected on
+2026-09-04 and `ahl-core` ("Seeds are never members of `Closure::affected`"). The seed is the
+record the trigger acts on, and the trigger itself dispositions it; propagation duties concern
+its descendants. What is *not* established here is that the corresponding disposition of the
+seed happened — that is the propagation statement's business (I-D Section 2.4.4), not the
+closure's.
+
 ## Lemma 2b assumes both verifiers hold the same prefix
 
-`affected_of_prefix_eq` has `log₁.take n = log₂.take n` as a hypothesis. That the prefix a
+`affected_of_prefix_eq` has `log₁.take n = log₂.take n` as a hypothesis, and every clause
+carries `t < tree_size` — the checkpoint must commit the trigger (I-D Section 5.1). That the prefix a
 verifier holds IS the log's true prefix `[0, n)` is not established by anything in this file —
 it is what authenticated enumeration gives (I-D Section 3.1 item 5), i.e. Lemma 3. Without
 Lemma 3, Lemma 2 is a statement about a computation, not about a corpus. Below L3 no
@@ -34,7 +44,8 @@ they are outside Lemma 3's statement.
 
 ## Nothing about void entries beyond their exclusion
 
-`edgesOf_void`, `trigger_seeds_void` and `not_affected_of_void_trigger` say what a void entry
+`edgesOf_void`, `trigger_seeds_void`, `edges_cons_void` and `not_affected_of_void_trigger` say
+what a void entry
 contributes: nothing. Whether a given entry IS void is decided by envelope verification
 (I-D Section 7.5.1 erratum 4d), which this model does not perform — voidness is a flag on the
 entry here. The same holds for a trigger's authority: an unauthorized but valid trigger is a

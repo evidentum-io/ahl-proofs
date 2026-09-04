@@ -139,8 +139,11 @@ def supersededReplacements {V : Type} (earlier : Log V) (target ownReplacement :
 
 -- AMBIGUITY: `ahl-core`'s `trigger_seeds` raises an error when the entry at `t` is absent or
 -- is not a trigger; a total Lean function cannot. An absent, void, or non-trigger entry yields
--- the empty seed set here, which makes the affected set empty as well — the closure of a
--- non-trigger is not a lemma of this document, and no statement below relies on the case. -/
+-- the empty seed set here, which makes the affected set empty as well. That totality is relied
+-- on nowhere: every clause of Lemma 2 carries the precondition `t < tree_size` — the checkpoint
+-- must commit the trigger (I-D Section 5.1, "evaluated at a checkpoint C that commits the
+-- trigger") — as a conjunct of `AhlProofs.Closure.Affected`, and the closure of a non-trigger
+-- is not a statement of this document. -/
 def trigger_seeds {V : Type} (log : Log V) (t : Nat) : List RecordRef :=
   match log[t]? with
   | none => []
