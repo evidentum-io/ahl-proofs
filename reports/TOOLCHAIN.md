@@ -25,7 +25,7 @@ need only facts Lean's own prelude (`Init`) already provides — `List.append_in
 dependency-free build is faster to check and easier to audit end to end, so it is kept that way
 for as long as the lemmas allow it.
 
-## Install — the same procedure a human runs and CI runs
+## Install — the pinned toolchain, and CI's steps in CI's order
 
 The toolchain is installed from the official release **archive**, fetched by its versioned
 release URL and compared against a recorded SHA-256 **before** it is unpacked. `lean --version`
@@ -34,27 +34,39 @@ is checked afterwards as a diagnostic, not as the identity check.
 **Run the file below as a file, not by pasting lines into a shell.** It is written with `set -eu`
 and *exits nonzero* at the first failure — a stale hash manifest, an unimported module, a
 forbidden lexeme, a `lean-toolchain` that has drifted from the pinned release, a digest mismatch,
-the wrong `lean` on `PATH`, a version or release-commit mismatch, or any failing check — with the
-same pinned URL, the same comparisons, the same expected values and **the same order** as the
-`lean` job of `.github/workflows/ci.yml`. Each block carries the number of the CI step it
-corresponds to, so the correspondence can be read off rather than taken on trust. Pasted line by
-line the script would print the same output and stop at nothing, which is why it is a file and why
-every guard is `exit 1` rather than a printed warning.
+the wrong `lean` on `PATH`, a version or release-commit mismatch, or any failing check. It uses
+the same pinned release URL and the same recorded digests as the `lean` job of
+`.github/workflows/ci.yml`, and its blocks carry the numbers of that job's steps, in that job's
+order. Pasted line by line the script would print the same output and stop at nothing, which is
+why it is a file and why every guard is `exit 1` rather than a printed warning.
 
-Four earlier versions of this section each got that wrong differently, which is why the point is
+**What is checked, and what is not.** `scripts/check_doc_claims.py` checks that this script is
+published once, that it parses (`sh -n`), that its `# CI step N [key]` labels cover the workflow's
+steps exactly once each in order with each key occurring in that step's name, and that its
+platform-selection block offers exactly the recorded archives and digests. **It does not compare
+what each block runs against what the corresponding CI step runs.** A comparison of command sets
+did that until it produced two defects of its own and was removed; replacing
+`python3 scripts/regression_fixtures.py` here with `:` would pass every check listed above. Which
+commands each block runs is maintained by hand and rests on review of the diff. The exhaustive
+list of what is machine-checked about these documents is in `reports/PROOF.md`, "What is checked
+about this document".
+
+Five earlier versions of this section each got something wrong, which is why the point is
 laboured here: the first piped an installer from a mutable branch with no comparison at all; the
 second verified the archive and then let the reader build with whatever `lean` was already on
 their `PATH`; the third added guards for exactly that and wrote them as `|| echo`, so they printed
 a warning and returned success; the fourth claimed to run CI's steps in CI's order while actually
 running only the manifest before the install and never cross-checking the pin at all — so a
-repointed `lean-toolchain` passed locally and failed in CI, which is the one outcome this section
-exists to prevent.
+repointed `lean-toolchain` passed locally and failed in CI; and the fifth went on calling this
+section "the same procedure a human runs and CI runs" after the check that compared the two had
+been deleted — a documented promise outliving the code that kept it, which is the one outcome this
+section exists to prevent.
 
 The four archives this repository records, with the SHA-256 of each. **The script below picks
 the right one from `uname -s` and `uname -m`; you do not choose.** A platform not in this table
 makes it exit 1 saying so, rather than installing whichever archive happens to be written down
 first — which is what an earlier version did, hard-wiring one platform's pair and so handing a
-reader on Linux a macOS build while calling the procedure equivalent to CI's.
+reader on Linux a macOS build while this section called the procedure CI's own.
 
 | Platform | Archive (all under `https://github.com/leanprover/lean4/releases/download/v4.31.0/`) | SHA-256 |
 |---|---|---|
@@ -69,21 +81,22 @@ policy — then cross-checks `lean-toolchain` against the release it is about to
 installs that release into one fixed, version-named directory (`$HOME/.local/lean-4.31.0`) after
 comparing its digest, puts that directory on `PATH`, refuses to continue unless the `lean` that
 resolves is that one and reports the expected release commit, and only then builds and runs the
-remaining checks. That is CI's order, step for step.
+remaining checks. That is the order of the `lean` job's steps, and the order is checked; what
+each block runs inside them is not.
 
 It is one file on purpose. An earlier version split it into a script plus two follow-up guards
 written as `|| echo`, which printed a warning and returned success — so a reader whose `PATH`
 pointed at some other Lean would see one line scroll past and build with it anyway. A guard that
-does not stop is not a guard, and a procedure a reader can half-perform is not equivalent to a CI
-job that fails.
+does not stop is not a guard, and a procedure a reader can half-perform does not fail the way a
+CI job fails.
 
 Save this as `verify-ahl-proofs.sh` and run it with `sh verify-ahl-proofs.sh /path/to/ahl-proofs`:
 
 ```sh
 #!/bin/sh
 # Install the pinned Lean toolchain, verify it, and run every check this repository publishes,
-# in the same order as the `lean` job of .github/workflows/ci.yml. The step numbers below are
-# that job's step numbers. Exits nonzero at the first failure; nothing after a failure runs.
+# in the order of the `lean` job of .github/workflows/ci.yml. The step numbers below are that
+# job's step numbers, and the labels are checked against it; what each block runs is not. Exits nonzero at the first failure; nothing after a failure runs.
 set -eu
 
 # CI step 1 [actions/checkout]. In CI this is the checkout; locally, the clone you have.
@@ -214,14 +227,15 @@ cross-check, the archive digest, the `lean` on `PATH` being the one just install
 the expected version and release commit, the cold build, 35 fixture runs covering 18 failure modes,
 the three-layer proof gate, and the document-claim check.
 
-**The equivalence claimed in this section is between the `lean` job of
-`.github/workflows/ci.yml` and running this file** — not between CI and any subset of these lines
-executed by hand. The numbered steps are CI's steps in CI's order: the manifest, the import
-invariant and the source policy run *before* the toolchain is fetched, exactly as they do in the
-workflow, so the first failure a reader sees locally is the first failure CI would report. An
-earlier version of this section installed Lean first and never ran the import invariant or the
-policy on their own — the outcome agreed on a healthy tree, the order and the first observable
-failure did not.
+**What this section claims, exactly.** Running this file — the whole file, not a subset of its
+lines typed by hand — installs the toolchain the `lean` job installs, verified against the same
+recorded digest, and then works through the same steps in the same order, so the first failure a
+reader sees locally is the first failure CI would report. The order and the identity of the steps
+are machine-checked against the workflow. **What each step does is not**: this file could run
+something other than what its CI counterpart runs and no check here would say so. An earlier
+version of this section installed Lean first and never ran the import invariant or the policy on
+their own — the outcome agreed on a healthy tree, the order and the first observable failure did
+not.
 
 To keep the toolchain for later shells, add `export PATH="$HOME/.local/lean-4.31.0/bin:$PATH"` to
 your shell profile. The install path is fixed and version-named precisely so that "which `lean`
@@ -301,7 +315,7 @@ need.
 **Note on the record above.** The `lake` path in the table at the top of this file
 (`/opt/homebrew/bin/lake`) is the Homebrew install that happened to be on the machine where the
 timings were recorded. That is a record of what ran there, not a recommendation: the reproducible
-path is the archive procedure in this section, which is what CI does.
+path is the archive procedure in this section, which installs the archive CI installs.
 
 No `opam`, no crate registry, no network access at build time beyond fetching the pinned Lean
 toolchain itself. `lake-manifest.json` has an empty package list, so `lake build` never touches a

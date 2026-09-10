@@ -58,14 +58,15 @@ Lean from the official release archive fetched by URL and **compared against a r
 before it is unpacked** — not from a mutable tag whose identity is taken on the word of the
 binary it installs — then runs `lake build`, which fails on any Lean warning
 (`declaration uses 'sorry'` foremost, via `leanOptions.warningAsError` in `lakefile.toml`), and
-then the proof gate. `reports/TOOLCHAIN.md` carries a single runnable script that performs the
-same steps in the same order as that workflow — the hash manifest, the import invariant and the
-source policy before the toolchain is fetched, then the pin cross-check, the digest-verified
-install, the toolchain self-report, the build, the fixtures, the gate and the document-claim
-check — with each block labelled by the CI step it corresponds to. It also says exactly what the
-digest comparison does and does not establish: GitHub publishes those digests; the Lean
-developers publish no checksum file or signature for this release, and this repository says so
-rather than implying an upstream attestation.
+then the proof gate. `reports/TOOLCHAIN.md` carries a single runnable script for installing the
+same pinned toolchain and working through the workflow's steps in the workflow's order, with each
+block labelled by the CI step it corresponds to. Those labels are machine-checked against the
+workflow — order, identity and count of steps — but **what each block runs is not compared with
+what the corresponding CI step runs**: that is maintained by hand and rests on review of the
+diff. `reports/TOOLCHAIN.md` also says exactly what the digest comparison does and does not
+establish: GitHub publishes those digests; the Lean developers publish no checksum file or
+signature for this release, and this repository says so rather than implying an upstream
+attestation.
 
 The gate is `./scripts/check_axioms.sh`, three layers in order:
 
@@ -129,24 +130,23 @@ tests", lists all 35 runs with the exit status of every stage.
 A defined list of claims in this file, in `reports/PROOF.md` and in `reports/TOOLCHAIN.md` is
 itself checked in CI by `scripts/check_doc_claims.py`: four published transcripts, the counts, the
 toolchain pin and all four release-archive digests, the fixture roster, and the install script
-`reports/TOOLCHAIN.md` publishes — which must be a single block that passes `sh -n`, whose
-`# CI step N [key].` labels must cover the workflow's steps once each, in order, whose commands
-must match those of the steps they mirror — every command in command position, minus a short
-declared list of indifferent ones, with shell the recogniser cannot read treated as an error, so a
-command appended to an existing step is caught however it is spelled — and whose every workflow
-workflow, job and step must fit a strict schema — admitted keys only, at all three levels, plus
-the declared runner image, the declared job environment, the exact `uses:` action, and triggers
-with no branch filter — so neither a step nor the whole job can be disabled with `if: false`, and
-the checkout action cannot be swapped for another repository, while everything else still looks
-right. **What each step actually runs is not compared with anything**: a comparison of command
-sets was removed after producing two defects of its own, and which commands a step runs is
-maintained by hand — and whose platform-selection block is parsed — never executed — to confirm it picks
-each recorded platform's archive and digest and refuses an unrecorded platform. `.github/workflows/ci.yml` is
-the source of truth for the step order and is read structurally, by a dependency-free reader that
-rejects anything outside the shape it understands rather than guessing. That list is
-enumerated exhaustively under "What is checked about this document" in `reports/PROOF.md`, and
-everything outside it — the mathematics, the section references, the build timings, the arguments
-— is maintained by hand and is not machine-checked.
+`reports/TOOLCHAIN.md` publishes. Of that script it checks that there is exactly one copy and that
+it parses (`sh -n`); that its `# CI step N [key].` labels cover the workflow's steps once each, in
+order, with each key occurring in that step's name; and that its platform-selection block — parsed,
+never executed — picks each recorded platform's archive and digest and refuses an unrecorded
+platform. It also holds the workflow itself to a strict schema at all three levels: admitted keys
+only, plus the declared runner image, the declared job environment, the exact `uses:` action, and
+triggers with no branch filter — so neither a step nor the whole job can be disabled with
+`if: false`, and the checkout action cannot be swapped for another repository.
+
+**What each step actually runs is not compared with anything.** A comparison of command sets did
+that until it produced two defects of its own and was removed; which commands a step runs, and
+whether the published script runs the same ones, is maintained by hand and rests on review of the
+diff. `.github/workflows/ci.yml` is the source of truth for the step order and is read
+structurally, by a dependency-free reader that rejects anything outside the shape it understands
+rather than guessing. The checked list is enumerated exhaustively under "What is checked about
+this document" in `reports/PROOF.md`, and everything outside it — the mathematics, the section
+references, the build timings, the arguments — is maintained by hand and is not machine-checked.
 
 `reports/PROOF.md` states what the three lemmas prove and — the part that matters most for anyone
 citing this repository — what they do **not**: there is no correspondence proof between this Lean

@@ -118,7 +118,7 @@ DECLARED_CLAIM_LABELS = frozenset({
 })
 
 
-INSTALL_HEADING = "## Install — the same procedure a human runs and CI runs"
+INSTALL_HEADING = "## Install — the pinned toolchain, and CI's steps in CI's order"
 WORKFLOW = ".github/workflows/ci.yml"
 WORKFLOW_JOB = "lean"
 

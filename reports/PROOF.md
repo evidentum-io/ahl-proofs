@@ -799,10 +799,12 @@ excluding it would let a change that quietly deleted the audit step pass unnotic
 ## Reproduce
 
 **The whole procedure is one script.** `reports/TOOLCHAIN.md`'s "Install" section is a single
-runnable file that installs the pinned toolchain and runs every check below, in the same order as
-the `lean` job of `.github/workflows/ci.yml`, with each block labelled by the CI step it
-corresponds to. Running that file is the local equivalent of a CI run, and it is the recommended
-way to reproduce this.
+runnable file that installs the pinned toolchain and runs every check below, working through the
+steps of the `lean` job of `.github/workflows/ci.yml` in that job's order, with each block
+labelled by the CI step it corresponds to. Those labels are checked against the workflow; what
+each block runs is not (see "What is checked about this document", item 5). Running that file is
+the recommended way to reproduce this, and it is the closest thing to a CI run that this
+repository can offer a reader — not a verified equivalent of one.
 
 The commands below are what it runs **after** the toolchain is verified. They are a subset, and
 deliberately named as one: the script additionally runs `scripts/check_imports.py` and
