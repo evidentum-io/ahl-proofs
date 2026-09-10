@@ -466,10 +466,16 @@ old audit printed a clean PASS on a tree that, in fact, contained an axiom and a
    boundary — which does not match `sorryAx`, the actual term `sorry` elaborates to.
 
 Both classes are closed constructively by working over the compiled environment rather than by
-patching the regex for these two specific cases: a declaration that exists after elaboration is,
-by definition, in `env.constants` — visibility modifiers and name-mangling change *how* it is
-named there, never *whether* it is there — and there is no comment syntax or string literal to
-mis-parse, because nothing here reads source text at all.
+patching the regex for these two specific cases: a **persistent** declaration that exists after
+elaboration is, by definition, in `env.constants` — visibility modifiers and name-mangling change
+*how* it is named there, never *whether* it is there — and there is no comment syntax or string
+literal to mis-parse, because nothing here reads source text at all.
+
+*Persistent* is doing work in that sentence and is not a hedge. A declaration that stores no
+constant is not in `env.constants` either, and `example` is exactly such a declaration: it
+elaborates, type-checks, and is discarded. So the environment audit does not cover `example`, and
+never claimed to — that is why `scripts/check_source_policy.py` exists as a second layer and why
+regression fixture 2 plants its placeholder inside one.
 
 **What is checked, over every constant whose home module is under `AhlProofs.*`** (not only
 `theorem`/`lemma` — `def`, `instance`, `private` declarations and automatically generated
@@ -491,7 +497,9 @@ document — see "Two counts, two purposes" below):
 
 **Two counts, two purposes.** `scripts/list_theorems.py` still exists and is unchanged in what it
 is *for*: counting the named `theorem`/`lemma` declarations for the prose numbers in this document
-and in `README.md` (102, in 10 files — see "What is proved" above). It is no longer part of the
+and in `README.md` (102, in 5 files — the other five `.lean` files under `AhlProofs/` are the
+three boundary files, the closure model and the root module, which declare no theorem of their
+own; see "What is proved" above). It is no longer part of the
 audit pipeline and its output is not fed to anything security-relevant; its own comment-stripper
 has the same string-literal blind spot described above; a script whose count is only ever read by
 a human is a different risk profile than one whose output gates a claim. `scripts/Audit.lean`
@@ -696,19 +704,12 @@ in any `.lean` file (regression fixture 2).
 `ahl/docs-md/priority-zero.md` states: "Без `sorry`/`axiom`; `Classical.choice` только в
 `commit_plain_descriptor_collision`." Verified with Lean `leanprover/lean4:v4.31.0`
 (`lean-toolchain`, commit `68218e876d2a38b1985b8590fff244a83c321783`), against all 645
-constants under `AhlProofs.*` — full output; this is what `./scripts/check_axioms.sh` prints,
-reproducible on any revision since nothing here is a one-time snapshot:
-
-```
-== layer 3/3: scripts/Audit.lean (environment-based axiom & placeholder-proof audit) ==
-scanned 645 constant(s) whose home module is `AhlProofs` or under it (every kind of declaration, not a curated subset of theorems)
-own axiom declarations: (none)
-sorryAx present in the closure of: (none)
-Classical.choice used by: #[AhlProofs.commit_plain_descriptor_collision]
-axiom(s) outside the allowed set [propext, Classical.choice, Quot.sound]: (none)
-extra axioms: (none) PASS
-
-```
+constants under `AhlProofs.*`, by layer 3 of the gate. **The output is not repeated here.** It is
+published once, in full, under "Live run" below, where it is compared character for character
+against what the command prints; a second copy in this section would be a second thing to keep in
+step, and the copy that used to sit here had already fallen out of step — it showed one of the
+three layers while calling itself the full output of `./scripts/check_axioms.sh`, and it predated
+the line the audit now prints about axioms declared in its own file.
 
 **Result: the claim holds exactly**, checked against every constant the compiler produced, not a
 hand-picked subset of named theorems. `Classical.choice` appears in the axiom footprint of

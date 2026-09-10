@@ -114,9 +114,12 @@ jobs:
           lake clean
           time lake build
 
-      # The claim in reports/PROOF.md that 8 failure modes, exercised by 12 fixture runs, each
-      # break this pipeline, and that a named layer catches each one, is re-established here on
-      # every run rather than reported from a person's memory of having tried it once. Each
+      # The claim in reports/PROOF.md that every failure mode declared in
+      # scripts/regression_fixtures.py breaks this pipeline, and that a named layer catches each
+      # one, is re-established here on every run rather than reported from a person's memory of
+      # having tried it once. The counts live in DECLARED_RUNS / DECLARED_MODES there and are
+      # deliberately not repeated in this comment: a number written twice is a number that drifts.
+      # Each
       # fixture is applied to a throwaway copy of the repository under the system temp directory —
       # the working tree is never written to, and the runner hashes every file under it (except
       # .git/, .lake/ and __pycache__/) before and after to prove that. Each fixture also runs

@@ -47,7 +47,7 @@ prelude provides
 (`List.append_inj`, `List.cons.injEq`, `List.mem_cons_of_mem`). Lemma 2 needs finite-set
 reasoning, which is where a library would normally be reached for; the two facts actually
 required — that filtering by a strictly stronger predicate shortens a list, and duplicate
-removal — are eleven and eight lines respectively (`length_filter_lt_of_witness`, `nub`), so
+removal — are short enough to prove in place (`length_filter_lt_of_witness`, `nub`), so
 the dependency-free build is kept. A dependency-free build is faster to check and easier to
 audit, so it stays that way for as long as the lemmas allow.
 
@@ -111,13 +111,13 @@ The gate is `./scripts/check_axioms.sh`, three layers in order:
    checked here against every constant on every run, at a finer grain than the 102 named
    theorems, and it still holds exactly.
 
-**38 fixture runs covering 19 failure modes** — an unimported module, an `example` under a locally
-relaxed `warningAsError`, a locally skipped kernel typecheck, an unfinished theorem, a top-level
-`axiom`, a new file left out of the hash manifest (run twice, with and without its `import` line,
-to show the manifest layer works independently of the import invariant), a forbidden lexeme in the
-sources (once per lexeme, so that no policy rule is left without a test), and audit tooling in a
-subdirectory of `scripts/` (so that the manifest's promise to cover *every* audit script is
-exercised, not merely intended) — are **run in CI on every push and pull request** by `scripts/regression_fixtures.py`, immediately before the gate.
+**38 fixture runs covering 19 failure modes** are **run in CI on every push and pull request** by
+`scripts/regression_fixtures.py`, immediately before the gate. They are not listed here: the
+modes are declared in that script and tabulated in `reports/PROOF.md`, "Required regression
+tests", and that table is checked against the declared roster on every run. A prose list here
+would be a second copy — an earlier one named eight of the nineteen and stopped, which is the
+same drift a parallel count produces.
+
 Each is applied to a throwaway copy of the repository, and the runner asserts not only that the
 pipeline exits nonzero but that the layer responsible is the one that failed, *and* that
 `./scripts/check_axioms.sh` itself fails with the diagnostic naming that layer — so a wrapper that

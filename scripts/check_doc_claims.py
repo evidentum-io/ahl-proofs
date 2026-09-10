@@ -1061,8 +1061,23 @@ def main() -> int:
     import regression_fixtures  # noqa: E402  (path set above; this is the roster's own source)
 
     theorems = len([line for line in theorems_out.splitlines() if line.strip()])
-    library_files = sorted((root / "AhlProofs").rglob("*.lean"))
-    theorem_files = len(library_files) + 1          # the library plus the root module
+
+    # The number of files that actually **contain** a `theorem`/`lemma` declaration — not the
+    # number of files scanned, which is what this used to compute (`len(AhlProofs/**/*.lean) + 1`)
+    # while the documents said "in N files". Those are different quantities: ten files are
+    # scanned, five of them declare anything, and the three boundary files and the closure model
+    # declare no theorem at all. A check that computes a neighbouring value and calls it the same
+    # name turns a green run into a confirmation of the wrong number, which is worse than not
+    # checking it.
+    from list_theorems import discover_files, parse_file  # noqa: E402
+    per_file = [(f, parse_file(f)[0]) for f in discover_files(root)]
+    theorem_files = sum(1 for _, names in per_file if names)
+    from_import = sum(len(names) for _, names in per_file)
+    if from_import != theorems:
+        problems.append(
+            f"scripts/list_theorems.py printed {theorems} declaration(s) but its own parser finds "
+            f"{from_import} when called directly — the two ways of counting must agree"
+        )
     manifest_files = len(
         (root / "reports" / "PROOF.sha256").read_text(encoding="utf-8").splitlines())
     constants = extract(r"scanned (\d+) constant\(s\)", gate_out, "the constant count", problems)

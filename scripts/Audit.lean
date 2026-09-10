@@ -63,9 +63,15 @@ already has the environment loaded, removes both the shelling-out and the text-f
 `list_theorems.py` had to *discover* what to audit before auditing it, and both blind spots above
 are exactly discovery failures. This file has no discovery step: `for (name, info) in
 env.constants` after `import AhlProofs` walks the constant table Lean itself built while
-elaborating every module of the library. A declaration that failed to reach `env.constants` would
-also have failed to build — the target list and the build are the same event, not two things that
-can drift apart.
+elaborating every module of the library. Every *persistent* declaration of a built module is
+there — `theorem`, `def`, `instance`, `private`, generated helpers alike — so for those the target
+list and the build are the same event and cannot drift apart.
+
+The exception is worth naming rather than glossing: a declaration that stores no constant is not
+here either. `example` is elaborated and discarded, so it never reaches `env.constants` and this
+audit is silent about it — which is not a build failure, it is a successful build of a thing the
+audit cannot see. That gap is covered by `scripts/check_source_policy.py`, which refuses the
+lexemes an `example` would have to carry to be dangerous, and by regression fixture 2.
 
 ## What this file does *not* cover, and which sibling layer does
 

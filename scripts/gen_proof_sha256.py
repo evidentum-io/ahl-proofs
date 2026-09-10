@@ -21,11 +21,17 @@ regenerated to match, `--check` fails, so a file cannot fall out of sync with wh
 claims about it merely by someone forgetting to rerun this script.
 
 This is deliberately narrower than "every file in the repository": `README.md`,
-`reports/PROOF.md` and `reports/TOOLCHAIN.md` are prose that can be edited without touching what
-the build or the audit compute, and are not included. What is included is exactly the set of
-files whose content changes what CI computes — the previous version of this file was a
-hand-written list that a new `.lean` file did not have to join to build; this generator has no
-such gap because it does not hand-maintain a list.
+`reports/PROOF.md` and `reports/TOOLCHAIN.md` are not included. What is included is the set of
+files whose content changes **what the build produces, what the audit walks, or the structure of
+the workflow that runs them** — the previous version of this file was a hand-written list that a
+new `.lean` file did not have to join to build; this generator has no such gap because it does
+not hand-maintain a list.
+
+Not "everything that changes the outcome of CI", which would be wider and false as written: the
+three prose documents are unhashed and can still turn CI red, because `scripts/check_doc_claims.py`
+compares their numbers and transcripts against what the checks print. They are covered by that
+check rather than by this manifest, and the distinction is the point — hashing them would make
+every wording change a manifest regeneration for no gain.
 
 Usage:
     gen_proof_sha256.py            # print the manifest to stdout, sha256sum -c format
