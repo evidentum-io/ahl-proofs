@@ -82,6 +82,43 @@ FORBIDDEN = [
 ]
 
 
+# The rules this policy is required to enforce, declared apart from the table above and checked
+# against it before a single file is read.
+#
+# Same reasoning as `DECLARED_RUNS` in scripts/regression_fixtures.py and the mandatory-file check
+# in scripts/gen_proof_sha256.py: `FORBIDDEN` is a list, and a loop over an empty or shortened list
+# finds nothing and reports success over every file it read. Deleting one entry would then be a
+# green run — which is precisely how the `admit` rule went untested for as long as it did. A
+# checker built by iterating a table must refuse to run when the table is not the declared one.
+DECLARED_LEXEMES = ("sorry", "admit", "warningAsError false", "debug.skipKernelTC")
+
+
+def validate_rules() -> list[str]:
+    problems: list[str] = []
+    labels = [label for label, _, _ in FORBIDDEN]
+    if not labels:
+        return ["FORBIDDEN is empty — a policy that forbids nothing must not report compliance"]
+    duplicates = sorted({x for x in labels if labels.count(x) > 1})
+    if duplicates:
+        problems.append(f"duplicate rule label(s): {duplicates}")
+    if tuple(labels) != DECLARED_LEXEMES:
+        problems.append(
+            f"rule set does not match the declared one: expected {list(DECLARED_LEXEMES)} in that "
+            f"order, got {labels}"
+        )
+    for label, pattern, why in FORBIDDEN:
+        if not getattr(pattern, "pattern", None):
+            problems.append(f"rule `{label}` has no pattern")
+        elif not isinstance(pattern.pattern, bytes):
+            problems.append(
+                f"rule `{label}` is not a bytes pattern — this checker reads files as bytes, so a "
+                "str pattern would raise rather than match"
+            )
+        if not str(why).strip():
+            problems.append(f"rule `{label}` has no stated reason")
+    return problems
+
+
 def discover(root: pathlib.Path) -> list[pathlib.Path]:
     return sorted(
         p for p in root.rglob("*.lean")
@@ -94,6 +131,19 @@ def main() -> int:
     ap.add_argument("--root", default=".", help="repository root (default: cwd)")
     args = ap.parse_args()
     root = pathlib.Path(args.root).resolve()
+
+    rule_problems = validate_rules()
+    if rule_problems:
+        print("check_source_policy.py: FAIL — the rule set is not the declared one",
+              file=sys.stderr)
+        for problem in rule_problems:
+            print(f"  - {problem}", file=sys.stderr)
+        print(
+            f"\nExpected exactly {list(DECLARED_LEXEMES)}. A policy that enforces fewer rules "
+            "than it claims must fail, not pass quietly.",
+            file=sys.stderr,
+        )
+        return 1
 
     files = discover(root)
     if not files:

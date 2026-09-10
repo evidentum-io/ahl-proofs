@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Machine-checked regression fixtures for the proof gate.
 
-`reports/PROOF.md` claims that 7 ways of breaking this repository each fail the pipeline (in 11
+`reports/PROOF.md` claims that 8 ways of breaking this repository each fail the pipeline (in 12
 fixture runs — mode 6 is exercised twice with different layers active, and mode 7 once per
 forbidden lexeme), and
 names the layer that catches each one. Until this script existed, that claim was a report of
@@ -166,6 +166,23 @@ def fixture_6b(root: pathlib.Path) -> None:
     p.write_text(t.replace(marker, marker + "import AhlProofs.Fresh\n"), encoding="utf-8")
 
 
+def fixture_8(root: pathlib.Path) -> None:
+    """Audit tooling in a subdirectory of `scripts/`, with the manifest left stale.
+
+    `scripts/gen_proof_sha256.py` documents itself as hashing *every* audit script. It used to
+    discover them with `glob`, which reads one directory level, while the library was discovered
+    with `rglob`. A script one directory down was therefore unhashed — silently outside the
+    manifest the documents said covered it. One file per extension the manifest claims to cover,
+    so the recursive walk is exercised for all three rather than for whichever one a single
+    fixture happened to pick.
+    """
+    nested = root / "scripts" / "nested"
+    nested.mkdir(parents=True, exist_ok=True)
+    (nested / "helper.py").write_text("# nested audit helper\n", encoding="utf-8")
+    (nested / "helper.sh").write_text("#!/bin/sh\n: nested audit helper\n", encoding="utf-8")
+    (nested / "Helper.lean").write_text("-- nested Lean helper\n", encoding="utf-8")
+
+
 # Each entry: expected exit status per stage (None = the stage is not run), the layer under test,
 # a substring that layer's output must contain, and — separately — the diagnostic the whole gate
 # (`./scripts/check_axioms.sh`) must print when it is expected to fail. `regen_manifest` reruns
@@ -274,6 +291,24 @@ FIXTURES = [
         "gate_reason": GATE_POLICY,
     }
     for suffix, lexeme in zip("abcd", FORBIDDEN_LEXEMES)
+] + [
+    {
+        "id": "8",
+        "mode": "8",
+        "title": "audit tooling in a scripts/ subdirectory, manifest left stale",
+        "apply": fixture_8,
+        "regen_manifest": False,
+        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 1},
+        "layer": "manifest",
+        "reason": [
+            "reports/PROOF.sha256 is stale",
+            "scripts/nested/helper.py",
+            "scripts/nested/helper.sh",
+            "scripts/nested/Helper.lean",
+        ],
+        # Nothing the gate covers is broken here: the manifest is CI's own step, as in 6b.
+        "gate_reason": "",
+    },
 ]
 
 # `gate` is `./scripts/check_axioms.sh` itself, run on the corrupted copy. It is not a fourth
@@ -299,8 +334,8 @@ STAGES = ["build", "imports", "policy", "audit", "gate", "manifest"]
 # more expensive: `scripts/check_doc_claims.py` compares this roster against the fixture table
 # published in reports/PROOF.md, so the same edit has to be made in three places, in one commit,
 # to go unnoticed. See "Trust boundary" in reports/PROOF.md.
-DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b", "7a", "7b", "7c", "7d")
-DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7")
+DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b", "7a", "7b", "7c", "7d", "8")
+DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8")
 REQUIRED_KEYS = {
     "id", "mode", "title", "apply", "regen_manifest", "expect", "layer", "reason", "gate_reason",
 }
@@ -351,7 +386,9 @@ def validate_roster() -> list[str]:
                 f"fixture {fid}: layer under test `{f['layer']}` is not declared to fail, so the "
                 "fixture would assert nothing about it"
             )
-        if not str(f.get("reason", "")).strip():
+        reasons = f.get("reason", "")
+        reasons = [reasons] if isinstance(reasons, str) else list(reasons)
+        if not reasons or not all(str(r).strip() for r in reasons):
             problems.append(f"fixture {fid}: no expected reason substring for its layer")
         gate_expected = f["expect"].get("gate")
         gate_reason = str(f.get("gate_reason", "")).strip()
@@ -444,11 +481,15 @@ def run_fixture(spec: dict, root: pathlib.Path, verbose: bool) -> tuple[bool, di
                 f"the layer under test (`{layer}`) did not fail — a nonzero pipeline caused by "
                 "some other stage does not count as this fixture passing"
             )
-        elif spec["reason"] not in outputs.get(layer, ""):
-            problems.append(
-                f"layer `{layer}` failed but its output does not contain the expected reason "
-                f"{spec['reason']!r}; got:\n{outputs.get(layer, '')[:800]}"
-            )
+        else:
+            wanted = spec["reason"]
+            wanted = [wanted] if isinstance(wanted, str) else list(wanted)
+            absent = [r for r in wanted if r not in outputs.get(layer, "")]
+            if absent:
+                problems.append(
+                    f"layer `{layer}` failed but its output does not contain the expected "
+                    f"reason(s) {absent!r}; got:\n{outputs.get(layer, '')[:1200]}"
+                )
 
         # The gate as a whole, not just the layer inside it. Asserting only the individual
         # commands would leave ./scripts/check_axioms.sh free to swallow their exit status.

@@ -114,7 +114,7 @@ jobs:
           lake clean
           time lake build
 
-      # The claim in reports/PROOF.md that 7 failure modes, exercised by 11 fixture runs, each
+      # The claim in reports/PROOF.md that 8 failure modes, exercised by 12 fixture runs, each
       # break this pipeline, and that a named layer catches each one, is re-established here on
       # every run rather than reported from a person's memory of having tried it once. Each
       # fixture is applied to a throwaway copy of the repository under the system temp directory —

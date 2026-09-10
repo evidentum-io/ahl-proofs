@@ -28,7 +28,7 @@ document" below. The four:
   declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
   because nothing was checked. It is a layer on top of the environment audit and never a
   substitute for it.
-* **The regression fixtures** — `scripts/regression_fixtures.py`. 11 fixture runs covering 7
+* **The regression fixtures** — `scripts/regression_fixtures.py`. 12 fixture runs covering 8
   failure modes of this repository, each applied to a throwaway copy of it, each required to fail
   *and* to fail at the layer that owns it, *and* to fail `./scripts/check_axioms.sh` itself with
   the diagnostic that names that layer. This is what keeps the other three honest: a layer that stopped working
@@ -123,7 +123,36 @@ statement of intent kept in sync by review, not by machine. Read it as: these ar
 will catch drifting; a claim removed from that script stops being caught, and only the diff would
 show it.
 
-That is the honest shape of the guarantee: strong against forgetting, weak against intent.
+**What else is trusted, unverified.** Naming Lean's kernel as trusted is the usual disclaimer and
+it is not the whole list. Everything below runs on machinery this repository does not check and
+cannot check:
+
+* **The CI runner and its image.** `actions/checkout` is pinned by commit SHA; `ubuntu-latest` is
+  not pinned at all — it is a moving image, rebuilt by GitHub, and every job here executes inside
+  it. The runner itself is GitHub's infrastructure.
+* **The system utilities every step depends on**: `curl` to fetch the archive, `sha256sum` to
+  compare its digest, `tar`/`zstd` to unpack it, `bash`/`sh` to sequence any of it, `find`,
+  `python3` for four of the five checks, and the `$GITHUB_PATH` mechanism that makes the installed
+  toolchain visible to later steps.
+* **`lean` and `lake` themselves**, beyond the digest: the digest establishes which bytes were
+  written to disk, not what those bytes do.
+
+The consequence has to be said plainly, because the digest check reads stronger than it is: on a
+compromised runner, `sha256sum` can print `OK`, `lean` can print the expected version and release
+commit, and the gate can exit 0, all without any of it being true. "The bytes unpacked and run are
+the bytes whose SHA-256 is recorded" is a claim about what the *procedure* does when the tools
+executing it are honest — it is not, and cannot be, a claim about a host that has been subverted. What the
+digest genuinely rules out is a substituted or corrupted *download* on an honest host, which is
+the realistic threat and the reason it is there.
+
+None of this is an argument against the checks; it is the boundary of what a repository can
+establish about itself from inside itself. A reader who needs more than this needs attestation
+from outside — a signed build, a reproducible-build comparison against an independent rebuild, or
+their own run on their own machine, which the "Install" section of `reports/TOOLCHAIN.md` exists
+to make possible.
+
+That is the honest shape of the guarantee: strong against forgetting, weak against intent, and
+resting on a host and a toolchain it takes on faith.
 
 ## Immutable identifiers
 
@@ -324,7 +353,7 @@ a library that just finished building — the two conditions cannot both hold.
 
 ### Required regression tests
 
-**11 fixture runs covering 7 failure modes** — seven ways for this pipeline to be wrong; mode 6 is
+**12 fixture runs covering 8 failure modes** — eight ways for this pipeline to be wrong; mode 6 is
 exercised twice with a different set of layers active (6 and 6b), and mode 7 once per forbidden
 lexeme (7a–7d), because a policy rule that no fixture exercises can be deleted without turning
 anything red. Each run must make the pipeline exit nonzero **and must be caught by the layer
@@ -392,8 +421,9 @@ exited 0, `1` = exited nonzero, `-` = not run):
       7b    policy         0         0         1         0         1         0   ok
       7c    policy         0         0         1         0         1         0   ok
       7d    policy         0         0         1         0         1         0   ok
+       8  manifest         0         0         0         0         0         1   ok
 
-all 11 fixture run(s) covering 7 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
+all 12 fixture run(s) covering 8 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
 ```
 
 | # | Fragment | Layer under test | Why that layer, and why not another |
@@ -409,6 +439,7 @@ all 11 fixture run(s) covering 7 failure mode(s) behaved as declared: each broke
 | 7b | `-- admit` in a Lean line comment | source policy | The rule that had no fixture at all until this one. Deleting the `admit` pattern from `scripts/check_source_policy.py` used to leave the whole suite green; it now fails this run. |
 | 7c | `-- warningAsError false` in a Lean line comment | source policy | Fixture 2 exercises this lexeme in its natural setting; this run pins the rule itself, independent of whether an `example` or a `set_option` happens to be involved. |
 | 7d | `-- debug.skipKernelTC` in a Lean line comment | source policy | Same, for the kernel-typecheck escape: the rule is tested apart from the elaborate proof that motivates it. |
+| 8 | `scripts/nested/helper.py`, `helper.sh` and `Helper.lean`, manifest left stale | hash manifest | The manifest documents itself as hashing *every* audit script, but discovered them with a single-level `glob` while the library used `rglob` — so a script one directory down was outside the manifest while the prose said it was covered. The fixture requires the staleness report to name all three nested paths, so the recursive walk is exercised for every extension the manifest claims, not just whichever one a single file would have picked. Like 6b, the gate itself passes: nothing the gate covers is broken. |
 
 For every fixture except 6 and 6b the runner regenerates the manifest inside the copy after
 applying the fixture, so manifest staleness cannot be what fails and the named layer is

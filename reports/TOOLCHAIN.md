@@ -140,13 +140,19 @@ echo
 echo "ALL CHECKS PASSED with the verified toolchain at ${PREFIX}"
 ```
 
-The script exits 0 only if the digest matched, the `lean` on `PATH` is the one that was just
-installed, that binary reported the expected version and release commit, and all five checks
-passed — the hash manifest, the cold build, 11 fixture runs covering 7 failure modes, the
-three-layer proof gate, and the document-claim check. **The equivalence claimed in this section is between the `lean` job of
+The script exits 0 only if every step passed: the three toolchain-free checks, the pin
+cross-check, the archive digest, the `lean` on `PATH` being the one just installed and reporting
+the expected version and release commit, the cold build, 12 fixture runs covering 8 failure modes,
+the three-layer proof gate, and the document-claim check.
+
+**The equivalence claimed in this section is between the `lean` job of
 `.github/workflows/ci.yml` and running this file** — not between CI and any subset of these lines
-executed by hand. Steps 1 to 4 are what CI does to the toolchain; step 5 is what CI runs against
-it, in the same order.
+executed by hand. The numbered steps are CI's steps in CI's order: the manifest, the import
+invariant and the source policy run *before* the toolchain is fetched, exactly as they do in the
+workflow, so the first failure a reader sees locally is the first failure CI would report. An
+earlier version of this section installed Lean first and never ran the import invariant or the
+policy on their own — the outcome agreed on a healthy tree, the order and the first observable
+failure did not.
 
 To keep the toolchain for later shells, add `export PATH="$HOME/.local/lean-4.31.0/bin:$PATH"` to
 your shell profile. The install path is fixed and version-named precisely so that "which `lean`
@@ -169,7 +175,19 @@ release asset were re-uploaded upstream (GitHub permits replacing a release asse
 mutable ref and so, in practice, are the files hanging off it), the comparison would fail rather
 than silently install different bytes.
 
-**Does not establish.** This is not an upstream attestation. `leanprover/lean4` publishes no
+**Does not establish — the host.** Every sentence above assumes the tools doing the checking are
+telling the truth. They are not verified by anything here: `curl` fetches the archive,
+`sha256sum` (or `shasum`) compares the digest, `tar` and `zstd` unpack it, `sh` sequences it,
+`find` locates the binary, `python3` runs four of the five checks, and in CI the whole job runs on
+`ubuntu-latest` — a moving image, rebuilt by GitHub, and unlike `actions/checkout` **not pinned by
+digest**. On a compromised host, `sha256sum` can print `OK`, `lean --version` can print the
+expected release commit, and every check can exit 0, without any of it being so. What the digest
+genuinely rules out is a substituted or corrupted *download* on an honest host, which is the
+realistic threat and the reason it is here. It cannot rule out a subverted host, and this document
+does not claim to. See "Trust boundary" in `reports/PROOF.md`, which lists this alongside the
+other things trusted unverified.
+
+**Does not establish — upstream.** This is not an upstream attestation. `leanprover/lean4` publishes no
 checksum file and no signature for the v4.31.0 release — the release body is a single link to the
 release notes, and the asset list contains no `SHA256SUMS`, `.asc` or `.sig` entry. The digests
 above are the values GitHub's release API reports for the stored assets

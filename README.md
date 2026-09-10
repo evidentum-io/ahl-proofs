@@ -91,12 +91,13 @@ The gate is `./scripts/check_axioms.sh`, three layers in order:
    checked here against every constant on every run, at a finer grain than the 102 named
    theorems, and it still holds exactly.
 
-**11 fixture runs covering 7 failure modes** — an unimported module, an `example` under a locally
+**12 fixture runs covering 8 failure modes** — an unimported module, an `example` under a locally
 relaxed `warningAsError`, a locally skipped kernel typecheck, an unfinished theorem, a top-level
 `axiom`, a new file left out of the hash manifest (run twice, with and without its `import` line,
-to show the manifest layer works independently of the import invariant), and a forbidden lexeme in
-the sources (once per lexeme, so that no policy rule is left without a test) — are **run in CI on
-every push and pull request** by `scripts/regression_fixtures.py`, immediately before the gate.
+to show the manifest layer works independently of the import invariant), a forbidden lexeme in the
+sources (once per lexeme, so that no policy rule is left without a test), and audit tooling in a
+subdirectory of `scripts/` (so that the manifest's promise to cover *every* audit script is
+exercised, not merely intended) — are **run in CI on every push and pull request** by `scripts/regression_fixtures.py`, immediately before the gate.
 Each is applied to a throwaway copy of the repository, and the runner asserts not only that the
 pipeline exits nonzero but that the layer responsible is the one that failed, *and* that
 `./scripts/check_axioms.sh` itself fails with the diagnostic naming that layer — so a wrapper that
@@ -104,7 +105,7 @@ stopped propagating an exit status is caught too. It also validates its own rost
 starting, so a truncated or emptied fixture list fails instead of reporting success over nothing.
 The working tree is never written to, and the runner hashes every file under it except `.git/`,
 `.lake/` and `__pycache__/` before and after to prove it. `reports/PROOF.md`, "Required regression
-tests", lists all 11 runs with the exit status of every stage.
+tests", lists all 12 runs with the exit status of every stage.
 
 A defined list of claims in this file, in `reports/PROOF.md` and in `reports/TOOLCHAIN.md` is
 itself checked in CI by `scripts/check_doc_claims.py`: four published transcripts, the counts, the

@@ -69,6 +69,33 @@ LEAN_RELEASE_DIGESTS = {
 }
 
 
+# What this script is required to check, declared apart from the tables that implement it, in the
+# same spirit as `DECLARED_RUNS` in scripts/regression_fixtures.py and the mandatory-file check in
+# scripts/gen_proof_sha256.py. Emptying or shortening `transcripts` or `claims` below would
+# otherwise be a green run over nothing — the recurring defect in this repository. This does not
+# make the list tamper-proof (an edit here and there in one commit still passes; see "Trust
+# boundary" in reports/PROOF.md), but it does mean a rule cannot fall out silently.
+DECLARED_TRANSCRIPTS = (
+    "the ./scripts/check_axioms.sh transcript",
+    "the manifest --check line",
+    "the regression-fixture table",
+)
+DECLARED_CLAIM_LABELS = frozenset({
+    "constant and theorem counts",
+    "theorem count",
+    "theorem count and the number of files they live in",
+    "constant count",
+    "fixture run and failure-mode counts",
+    "the number of files in the hash manifest",
+    "the Lean release commit",
+    "the pinned Lean version",
+    "the pinned release commit",
+    "the pinned toolchain tag",
+    "the version in the recorded toolchain self-report",
+    "the lake job count",
+})
+
+
 def run(cmd: list[str], cwd: pathlib.Path) -> tuple[int, str]:
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     return proc.returncode, proc.stdout + proc.stderr
@@ -163,10 +190,25 @@ def main() -> int:
         docs[name] = path.read_text(encoding="utf-8")
 
     # ---------------------------------------------------------------- computed reality ----------
+    # Order matters here, and it was wrong once. A cold build runs FIRST, and everything else is
+    # measured after it. The previous version ran the gate against whatever `.olean`s happened to
+    # be lying around, then rebuilt, and then read the constant count out of that first, pre-build
+    # gate output — so an edited source with stale `.olean`s produced a green run publishing the
+    # numbers of the *old* code. That is a false pass for exactly the claim this script exists to
+    # make. One build, then one gate against that build, and every value below comes from after
+    # the build.
+    build_rc, build_out = run(["bash", "-c", "lake clean && lake build"], root)
+    if build_rc != 0:
+        print("FAIL: `lake clean && lake build` does not succeed:\n" + build_out, file=sys.stderr)
+        return 1
+    built_modules = set(re.findall(r"Built (\S+)", build_out))
+    jobs = extract(r"\((\d+) jobs\)", build_out, "the lake job count", problems)
+
     gate_rc, gate_out = run(["./scripts/check_axioms.sh"], root)
     if gate_rc != 0:
-        print("FAIL: ./scripts/check_axioms.sh does not pass, so there is no successful "
-              "transcript to compare the documents against:\n" + gate_out, file=sys.stderr)
+        print("FAIL: ./scripts/check_axioms.sh does not pass on the freshly built tree, so there "
+              "is no successful transcript to compare the documents against:\n" + gate_out,
+              file=sys.stderr)
         return 1
 
     manifest_rc, manifest_out = run(
@@ -187,17 +229,6 @@ def main() -> int:
     if theorems_rc != 0:
         print("FAIL: scripts/list_theorems.py failed:\n" + theorems_out, file=sys.stderr)
         return 1
-
-    # A cold build, so the transcript published under "lake clean && time lake build" can be
-    # checked for the two things about it that are reproducible: which modules were built, and how
-    # many jobs lake reports. Timings are not checked and are labelled illustrative in the
-    # document — they differ between machines and between runs on one machine.
-    build_rc, build_out = run(["bash", "-c", "lake clean && lake build"], root)
-    if build_rc != 0:
-        print("FAIL: `lake clean && lake build` does not succeed:\n" + build_out, file=sys.stderr)
-        return 1
-    built_modules = set(re.findall(r"Built (\S+)", build_out))
-    jobs = extract(r"\((\d+) jobs\)", build_out, "the lake job count", problems)
 
     import regression_fixtures  # noqa: E402  (path set above; this is the roster's own source)
 
@@ -261,7 +292,7 @@ def main() -> int:
     # The build transcript, checked for its reproducible content only: the set of modules built
     # and the job count. Located as a single block in its own section the same way.
     build_heading = "### `lake clean && time lake build`"
-    build_hits = [body for _, body in fenced_blocks(docs["reports/PROOF.md"])
+    build_hits = [(off, body) for off, body in fenced_blocks(docs["reports/PROOF.md"])
                   if body.splitlines()
                   and body.splitlines()[0].rstrip() == "$ lake clean && time lake build"]
     if len(build_hits) != 1:
@@ -270,8 +301,20 @@ def main() -> int:
             f"transcript, found {len(build_hits)}"
         )
     else:
-        published_modules = set(re.findall(r"Built (\S+)", build_hits[0]))
-        published_jobs = re.search(r"\((\d+) jobs\)", build_hits[0])
+        build_off, build_body = build_hits[0]
+        # Same section check the other three transcripts get; an earlier version located this one
+        # by first line only and threw the offset away, so the promise that it sits in the section
+        # named for it was not actually enforced.
+        build_span = section_span(docs["reports/PROOF.md"], build_heading)
+        if build_span is None:
+            problems.append(f"reports/PROOF.md: section {build_heading!r} is gone")
+        elif not (build_span[0] <= build_off < build_span[1]):
+            problems.append(
+                "reports/PROOF.md: the build transcript is published outside the section "
+                f"{build_heading!r} it belongs to"
+            )
+        published_modules = set(re.findall(r"Built (\S+)", build_body))
+        published_jobs = re.search(r"\((\d+) jobs\)", build_body)
         if published_modules != built_modules:
             problems.append(
                 "reports/PROOF.md: the published build transcript lists modules "
@@ -286,8 +329,6 @@ def main() -> int:
                 f"reports/PROOF.md: the published build transcript says "
                 f"{published_jobs.group(1)} jobs, lake reports {jobs}"
             )
-        if section_span(docs["reports/PROOF.md"], build_heading) is None:
-            problems.append(f"reports/PROOF.md: section {build_heading!r} is gone")
 
     # ---------------------------------------------------------------- prose claims --------------
     # (document, pattern, expected values for the pattern's groups, label)
@@ -344,8 +385,29 @@ def main() -> int:
          f"the {asset} digest")
         for asset, digest in LEAN_RELEASE_DIGESTS.items()
     ]
-    if not claims:
-        print("check_doc_claims.py: FAIL — no claims registered", file=sys.stderr)
+    # The rosters, before any of it is used. A shortened `transcripts` or `claims` must be a
+    # failure, not a shorter but passing run.
+    expected_labels = set(DECLARED_CLAIM_LABELS) | {
+        f"the {asset} digest" for asset in LEAN_RELEASE_DIGESTS
+    }
+    actual_labels = {label for _, _, _, label in claims}
+    roster_problems = []
+    if tuple(label for _, _, label, _ in transcripts) != DECLARED_TRANSCRIPTS:
+        roster_problems.append(
+            f"transcript set does not match the declared one: expected "
+            f"{list(DECLARED_TRANSCRIPTS)}, got {[label for _, _, label, _ in transcripts]}"
+        )
+    if actual_labels != expected_labels:
+        roster_problems.append(
+            "claim set does not match the declared one; missing "
+            f"{sorted(expected_labels - actual_labels)}, unexpected "
+            f"{sorted(actual_labels - expected_labels)}"
+        )
+    if roster_problems:
+        print("check_doc_claims.py: FAIL — this checker is not checking what it declares",
+              file=sys.stderr)
+        for problem in roster_problems:
+            print(f"  - {problem}", file=sys.stderr)
         return 1
 
     for doc_name, pattern, expected_groups, label in claims:

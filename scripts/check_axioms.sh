@@ -31,8 +31,8 @@
 # already produced up-to-date `.olean`s (CI runs the build as its own prior step; see
 # .github/workflows/ci.yml) — it does not rebuild anything itself.
 #
-# That these three layers still work is itself tested: scripts/regression_fixtures.py applies 7
-# known ways of breaking this repository, in 11 fixture runs, to throwaway copies of it and
+# That these three layers still work is itself tested: scripts/regression_fixtures.py applies 8
+# known ways of breaking this repository, in 12 fixture runs, to throwaway copies of it and
 # requires each to fail at the layer that owns it -- and requires THIS script, run on the same
 # corrupted copy, to exit nonzero with the diagnostic naming that layer, so a wrapper that
 # swallowed an exit status would be caught. CI runs it immediately before this script.

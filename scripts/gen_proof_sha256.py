@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Generate (or check) `reports/PROOF.sha256` — an internal-consistency manifest over every file
 that participates in the Lean build, the audit tooling, or the CI workflow that runs both: the
-toolchain pin, the lake project files, every `.lean` file under the library (discovered the same
-way `scripts/list_theorems.py` discovers them — a glob, not a hand-maintained list, so a *new*
-`.lean` file is picked up automatically), every audit script, and `.github/workflows/ci.yml`
-itself — the workflow is what determines whether the audit runs at all, so a manifest that did
-not cover it would not notice a change that quietly deleted the audit step.
+toolchain pin, the lake project files, every `.lean` file under the library (discovered by a
+recursive glob, not a hand-maintained list, so a *new* `.lean` file is picked up automatically),
+every audit script under `scripts/` **at any depth**, and `.github/workflows/ci.yml` itself — the
+workflow is what determines whether the audit runs at all, so a manifest that did not cover it
+would not notice a change that quietly deleted the audit step.
+
+Every one of those is **required to exist**. A missing entry is a failure of this script, not a
+shorter manifest: see `discover()` for why that distinction is the whole point.
 
 **What this manifest is, and is not.** It is a same-commit internal-consistency check: the
 manifest is generated from, and committed alongside, exactly the files it lists, by the same
@@ -43,13 +46,62 @@ FIXED_FILES = [
 ]
 
 
+# The smallest set that still means something. A manifest listing fewer files than this is not a
+# smaller manifest, it is a broken one, and it must not be generated or accepted.
+MIN_LIBRARY_FILES = 1
+MIN_SCRIPT_FILES = 1
+
+
+class Degenerate(Exception):
+    """The discovered set is missing something the manifest is documented to cover."""
+
+
 def discover(root: pathlib.Path) -> list[pathlib.Path]:
-    paths = [root / f for f in FIXED_FILES]
-    paths += sorted((root / "AhlProofs").rglob("*.lean"))
-    paths += sorted((root / "scripts").glob("*.py"))
-    paths += sorted((root / "scripts").glob("*.sh"))
-    paths += sorted((root / "scripts").glob("*.lean"))
-    return [p for p in paths if p.is_file()]
+    """Every file the manifest covers, or `Degenerate` if any of it is missing.
+
+    **Why this raises instead of filtering.** An earlier version ended in
+    `return [p for p in paths if p.is_file()]`: a file named in `FIXED_FILES` that did not exist
+    simply dropped out of the set. On a tree with none of them present, and an empty
+    `reports/PROOF.sha256`, `--check` compared `[]` against `[]` and reported success — having
+    verified nothing, while this module's docstring went on promising that the toolchain pin, the
+    lake project files and every audit script were covered. That is the same defect as an audit
+    whose target list can be truncated to empty and still pass, and it is the third time this
+    repository has grown one. A set built by filtering and then compared against a manifest built
+    the same way must treat a degenerate set as failure, never as agreement.
+
+    `rglob` is used for `scripts/` as well as for the library: the documentation promises *every*
+    audit script, and an earlier `glob` covered only the immediate directory, so a script in a
+    subdirectory would have gone unhashed while the prose said otherwise. Regression fixture 8
+    exercises exactly that.
+    """
+    missing = [f for f in FIXED_FILES if not (root / f).is_file()]
+    if missing:
+        raise Degenerate(
+            "file(s) this manifest is required to cover do not exist: " + ", ".join(missing)
+        )
+
+    library = sorted((root / "AhlProofs").rglob("*.lean"))
+    if len(library) < MIN_LIBRARY_FILES:
+        raise Degenerate(
+            f"found {len(library)} .lean file(s) under AhlProofs/, expected at least "
+            f"{MIN_LIBRARY_FILES} — a manifest covering no proof source is not a manifest"
+        )
+
+    scripts: list[pathlib.Path] = []
+    for pattern in ("*.py", "*.sh", "*.lean"):
+        scripts += (root / "scripts").rglob(pattern)
+    scripts = sorted(set(scripts))
+    if len(scripts) < MIN_SCRIPT_FILES:
+        raise Degenerate(
+            f"found {len(scripts)} file(s) under scripts/, expected at least {MIN_SCRIPT_FILES} — "
+            "a manifest covering no audit tooling is not a manifest"
+        )
+
+    paths = [root / f for f in FIXED_FILES] + library + scripts
+    not_files = [str(p.relative_to(root)) for p in paths if not p.is_file()]
+    if not_files:
+        raise Degenerate("discovered path(s) that are not readable files: " + ", ".join(not_files))
+    return paths
 
 
 def manifest_lines(root: pathlib.Path) -> list[str]:
@@ -71,7 +123,14 @@ def main() -> int:
     args = ap.parse_args()
     root = pathlib.Path(args.root).resolve()
 
-    fresh = manifest_lines(root)
+    try:
+        fresh = manifest_lines(root)
+    except Degenerate as e:
+        # Before any comparison: an incomplete set must fail, whether generating or checking.
+        # Comparing an incomplete set against a manifest generated from the same incomplete set
+        # would agree, and agreeing on nothing is exactly what this guards against.
+        print(f"FAIL: refusing to work with a degenerate file set — {e}", file=sys.stderr)
+        return 1
     if not args.check:
         print("\n".join(fresh))
         return 0
