@@ -248,6 +248,30 @@ def main() -> int:
                           problems)
     linux_digest = extract(r'LEAN_ASSET_SHA256:\s*"([^"]+)"', ci, "the pinned archive digest",
                            problems)
+    # The ASSET/DIGEST pair inside reports/TOOLCHAIN.md's install script, which is what a reader
+    # actually runs. Only the table above it used to be checked, so a mistyped digest in the
+    # script itself would have gone unnoticed — and did, once, before this check existed.
+    toolchain_doc = docs["reports/TOOLCHAIN.md"]
+    script_asset = re.search(r"^ASSET=(\S+)$", toolchain_doc, flags=re.M)
+    script_digest = re.search(r"^DIGEST=([0-9a-f]{64})$", toolchain_doc, flags=re.M)
+    if not script_asset or not script_digest:
+        problems.append(
+            "reports/TOOLCHAIN.md: the install script no longer declares an ASSET= and a "
+            "64-hex-digit DIGEST= on their own lines, so the pair a reader would run could not "
+            "be checked"
+        )
+    elif script_asset.group(1) not in LEAN_RELEASE_DIGESTS:
+        problems.append(
+            f"reports/TOOLCHAIN.md: the install script names archive {script_asset.group(1)}, "
+            "which has no digest recorded in this checker"
+        )
+    elif LEAN_RELEASE_DIGESTS[script_asset.group(1)] != script_digest.group(1):
+        problems.append(
+            f"reports/TOOLCHAIN.md: the install script pairs {script_asset.group(1)} with digest "
+            f"{script_digest.group(1)}, the recorded digest is "
+            f"{LEAN_RELEASE_DIGESTS[script_asset.group(1)]}"
+        )
+
     linux_asset = extract(r'LEAN_ASSET:\s*"([^"]+)"', ci, "the pinned archive name", problems)
     if linux_asset and linux_asset not in LEAN_RELEASE_DIGESTS:
         problems.append(

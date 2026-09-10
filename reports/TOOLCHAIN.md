@@ -32,17 +32,23 @@ release URL and compared against a recorded SHA-256 **before** it is unpacked. `
 is checked afterwards as a diagnostic, not as the identity check.
 
 **Run the file below as a file, not by pasting lines into a shell.** It is written with `set -eu`
-and *exits nonzero* at the first failure — a digest mismatch, the wrong `lean` on `PATH`, a
-version or release-commit mismatch, or any failing check — with the same pinned URL, the same
-comparisons and the same expected values as the `lean` job of `.github/workflows/ci.yml`. Pasted
-line by line it would print the same output and stop at nothing, which is why it is a file and
-why the guards are `exit 1` rather than a printed warning.
+and *exits nonzero* at the first failure — a stale hash manifest, an unimported module, a
+forbidden lexeme, a `lean-toolchain` that has drifted from the pinned release, a digest mismatch,
+the wrong `lean` on `PATH`, a version or release-commit mismatch, or any failing check — with the
+same pinned URL, the same comparisons, the same expected values and **the same order** as the
+`lean` job of `.github/workflows/ci.yml`. Each block carries the number of the CI step it
+corresponds to, so the correspondence can be read off rather than taken on trust. Pasted line by
+line the script would print the same output and stop at nothing, which is why it is a file and why
+every guard is `exit 1` rather than a printed warning.
 
-Three earlier versions of this section each got that wrong differently, which is why the point is
+Four earlier versions of this section each got that wrong differently, which is why the point is
 laboured here: the first piped an installer from a mutable branch with no comparison at all; the
 second verified the archive and then let the reader build with whatever `lean` was already on
 their `PATH`; the third added guards for exactly that and wrote them as `|| echo`, so they printed
-a warning and returned success.
+a warning and returned success; the fourth claimed to run CI's steps in CI's order while actually
+running only the manifest before the install and never cross-checking the pin at all — so a
+repointed `lean-toolchain` passed locally and failed in CI, which is the one outcome this section
+exists to prevent.
 
 Pick the archive for your platform:
 
@@ -53,11 +59,15 @@ Pick the archive for your platform:
 | macOS aarch64 (Apple silicon; the machine this file records) | `lean-4.31.0-darwin_aarch64.tar.zst` | `264105500c8abdf37b68ffe03390a783ed259807807222698da8dd92d6ce0a27` |
 | macOS x86-64 | `lean-4.31.0-darwin.tar.zst` | `6dac7a8f9d6d0bc339b4ea9376c06a88f3fd1a7f462beb3c7ded9fbc934f3fb5` |
 
-**One script, fail-closed, start to finish.** Everything below is a single runnable file: it
-installs the toolchain into one fixed, version-named directory (`$HOME/.local/lean-4.31.0`), puts
-that directory on `PATH`, refuses to continue unless the `lean` it is about to use is that one and
-reports the expected release commit, and only then builds and runs the checks. It is one file on
-purpose. An earlier version of this section split it into a script plus two follow-up guards
+**One script, fail-closed, start to finish.** Everything below is a single runnable file. It runs
+the three checks that need no toolchain first — the hash manifest, the import invariant, the source
+policy — then cross-checks `lean-toolchain` against the release it is about to install, then
+installs that release into one fixed, version-named directory (`$HOME/.local/lean-4.31.0`) after
+comparing its digest, puts that directory on `PATH`, refuses to continue unless the `lean` that
+resolves is that one and reports the expected release commit, and only then builds and runs the
+remaining checks. That is CI's order, step for step.
+
+It is one file on purpose. An earlier version split it into a script plus two follow-up guards
 written as `|| echo`, which printed a warning and returned success — so a reader whose `PATH`
 pointed at some other Lean would see one line scroll past and build with it anyway. A guard that
 does not stop is not a guard, and a procedure a reader can half-perform is not equivalent to a CI
@@ -67,11 +77,14 @@ Save this as `verify-ahl-proofs.sh` and run it with `sh verify-ahl-proofs.sh /pa
 
 ```sh
 #!/bin/sh
-# Install the pinned Lean toolchain, verify it, and run every check this repository publishes.
-# Exits nonzero at the first failure; nothing after a failure runs.
+# Install the pinned Lean toolchain, verify it, and run every check this repository publishes,
+# in the same order as the `lean` job of .github/workflows/ci.yml. The step numbers below are
+# that job's step numbers. Exits nonzero at the first failure; nothing after a failure runs.
 set -eu
 
+# CI step 1 is `actions/checkout`; locally that is the clone you already have.
 REPO="${1:-.}"
+cd "${REPO}"
 
 # --- from the table above; change all four together, never one alone ------------------------
 ASSET=lean-4.31.0-darwin_aarch64.tar.zst
@@ -80,24 +93,44 @@ EXPECTED_LEAN_VERSION=4.31.0
 EXPECTED_LEAN_COMMIT=68218e876d2a38b1985b8590fff244a83c321783
 
 PREFIX="$HOME/.local/lean-${EXPECTED_LEAN_VERSION}"
+
+# CI step 2. The hash manifest.
+python3 scripts/gen_proof_sha256.py --check
+
+# CI step 3. The import invariant, on its own — not merely inside the gate at the end. CI runs
+#            it here so a structural mistake fails in seconds instead of after an install and a
+#            build, and so that the first failure a reader sees is the first failure CI reports.
+python3 scripts/check_imports.py
+
+# CI step 4. The source policy, likewise on its own.
+python3 scripts/check_source_policy.py
+
+# CI step 5. lean-toolchain must name the release this script installs. Without this, a
+#            repointed lean-toolchain passes locally (the manifest was regenerated, so nothing
+#            else notices) and fails in CI — a green local run against a red CI run, in exactly
+#            the check this section exists for.
+actual_pin="$(tr -d '[:space:]' < lean-toolchain)"
+if [ "${actual_pin}" != "leanprover/lean4:v${EXPECTED_LEAN_VERSION}" ]; then
+  echo "PIN MISMATCH: lean-toolchain says '${actual_pin}', this script installs v${EXPECTED_LEAN_VERSION}"
+  exit 1
+fi
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# 1. Fetch the archive by its versioned release URL. The URL selects a release; the digest
-#    below is what actually pins the bytes.
+# CI step 6. Fetch the archive by its versioned release URL and compare the digest BEFORE
+#            unpacking. The URL selects a release; the digest is what pins the bytes. `-c` exits
+#            nonzero on a mismatch, and `set -e` stops the script here.
 curl -fsSL --retry 3 -o "${WORK}/${ASSET}" \
   "https://github.com/leanprover/lean4/releases/download/v${EXPECTED_LEAN_VERSION}/${ASSET}"
-
-# 2. Compare the digest BEFORE unpacking. `-c` exits nonzero on a mismatch, and `set -e` stops
-#    the script here.
 ( cd "${WORK}" && if command -v sha256sum >/dev/null 2>&1; then
     echo "${DIGEST}  ${ASSET}" | sha256sum -c -
   else
     echo "${DIGEST}  ${ASSET}" | shasum -a 256 -c -    # macOS, no GNU coreutils
   fi )
 
-# 3. Unpack, then move the toolchain to the fixed directory, so that later commands can name it
-#    explicitly instead of hoping PATH is right.
+#            Only now unpack, and move the toolchain to the fixed directory, so that later
+#            commands can name it explicitly instead of hoping PATH is right.
 mkdir -p "${WORK}/unpacked"
 tar --zstd -xf "${WORK}/${ASSET}" -C "${WORK}/unpacked"   # needs zstd; or: unzstd + tar -xf
 FOUND="$(find "${WORK}/unpacked" -type f -path '*/bin/lean' -print -quit)"
@@ -108,11 +141,12 @@ fi
 rm -rf "${PREFIX}"
 mkdir -p "$(dirname "${PREFIX}")"
 mv "$(dirname "$(dirname "${FOUND}")")" "${PREFIX}"
-
-# 4. Put it on PATH, then refuse to go on unless the `lean` that resolves is that one. Both of
-#    these exit 1; neither merely warns.
 PATH="${PREFIX}/bin:${PATH}"
 export PATH
+
+# CI step 7. The toolchain self-report. CI checks the version and release commit here; locally
+#            there is one more thing to check that CI gets for free from $GITHUB_PATH — that the
+#            `lean` which actually resolves is the one just installed. Both guards exit 1.
 if [ "$(command -v lean)" != "${PREFIX}/bin/lean" ]; then
   echo "WRONG LEAN ON PATH: $(command -v lean), expected ${PREFIX}/bin/lean"
   exit 1
@@ -128,9 +162,7 @@ case "${actual}" in
     ;;
 esac
 
-# 5. Build and run every check. `set -e` makes any nonzero exit stop the script.
-cd "${REPO}"
-python3 scripts/gen_proof_sha256.py --check
+# CI steps 8-11. Build, the regression fixtures, the proof gate, the document-claim check.
 lake clean && time lake build
 python3 scripts/regression_fixtures.py
 ./scripts/check_axioms.sh
@@ -170,7 +202,11 @@ recorded above and in the workflow. Note which half of that does the work: the r
 *versioned*, not immutable — it names a tag and a filename, and GitHub permits both a tag to move
 and a release asset to be replaced. What is immutable here is the recorded digest. The URL says
 which file to ask for; the digest decides whether the answer is accepted. A corrupted or substituted download — including one served by
-a compromised or intercepted connection — fails step 2 and never reaches the filesystem. If the
+a compromised or intercepted connection — fails the digest comparison and never reaches unpacking
+or the installed toolchain directory. Precisely: `curl` writes the archive into a throwaway
+`mktemp -d` first, so a bad download does touch the disk; what it never reaches is `tar`, the
+`$HOME/.local/lean-…` directory, or any execution, and the `trap` removes the temporary directory
+on exit. If the
 release asset were re-uploaded upstream (GitHub permits replacing a release asset; a tag is a
 mutable ref and so, in practice, are the files hanging off it), the comparison would fail rather
 than silently install different bytes.

@@ -52,10 +52,14 @@ Lean from the official release archive fetched by URL and **compared against a r
 before it is unpacked** — not from a mutable tag whose identity is taken on the word of the
 binary it installs — then runs `lake build`, which fails on any Lean warning
 (`declaration uses 'sorry'` foremost, via `leanOptions.warningAsError` in `lakefile.toml`), and
-then the proof gate. `reports/TOOLCHAIN.md` gives the same install procedure for a human,
-step for step, and says exactly what the digest comparison does and does not establish — GitHub
-publishes those digests; the Lean developers publish no checksum file or signature for this
-release, and this repository says so rather than implying an upstream attestation.
+then the proof gate. `reports/TOOLCHAIN.md` carries a single runnable script that performs the
+same steps in the same order as that workflow — the hash manifest, the import invariant and the
+source policy before the toolchain is fetched, then the pin cross-check, the digest-verified
+install, the toolchain self-report, the build, the fixtures, the gate and the document-claim
+check — with each block labelled by the CI step it corresponds to. It also says exactly what the
+digest comparison does and does not establish: GitHub publishes those digests; the Lean
+developers publish no checksum file or signature for this release, and this repository says so
+rather than implying an upstream attestation.
 
 The gate is `./scripts/check_axioms.sh`, three layers in order:
 

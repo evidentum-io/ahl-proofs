@@ -597,10 +597,19 @@ excluding it would let a change that quietly deleted the audit step pass unnotic
 
 ## Reproduce
 
-**One prerequisite and five commands.** The prerequisite is the toolchain: install it first, from
-the checksummed release archive, following `reports/TOOLCHAIN.md`'s "Install" section in full —
-the script *and* the `export` *and* the two guards after it, which together fail the same way the
-`lean` job of `.github/workflows/ci.yml` fails. Then, from a clean clone:
+**The whole procedure is one script.** `reports/TOOLCHAIN.md`'s "Install" section is a single
+runnable file that installs the pinned toolchain and runs every check below, in the same order as
+the `lean` job of `.github/workflows/ci.yml`, with each block labelled by the CI step it
+corresponds to. Running that file is the local equivalent of a CI run, and it is the recommended
+way to reproduce this.
+
+The commands below are what it runs **after** the toolchain is verified. They are a subset, and
+deliberately named as one: the script additionally runs `scripts/check_imports.py` and
+`scripts/check_source_policy.py` on their own, and cross-checks `lean-toolchain` against the
+pinned release, all *before* fetching the archive — as CI does. Run only these five with a
+toolchain already on `PATH` and the import invariant and the source policy are still covered, but
+by `./scripts/check_axioms.sh` at the end rather than up front, and the pin cross-check is not
+covered at all. From a clean clone:
 
 ```sh
 git clone https://github.com/evidentum-io/ahl-proofs.git
