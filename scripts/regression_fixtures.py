@@ -183,6 +183,34 @@ def fixture_8(root: pathlib.Path) -> None:
     (nested / "helper.sh").write_text("#!/bin/sh\n: nested audit helper\n", encoding="utf-8")
 
 
+def drop_canonical_sentence(rel: str):
+    """Remove the canonical scope sentence from one of the three documents.
+
+    The sentence names the boundary — the order and identity of the workflow's steps are checked,
+    what each step runs is not — and is required verbatim in `README.md`, `reports/PROOF.md` and
+    `reports/TOOLCHAIN.md`. It exists because a promise once outlived the code that kept it: the
+    command comparison was deleted, `reports/PROOF.md` was rewritten to say so, and the other two
+    documents went on promising "the same procedure". One run per document, because the
+    requirement is one claim entry per document and a single run would leave two of them
+    unexercised.
+    """
+    def apply(root: pathlib.Path) -> None:
+        import sys as _sys
+        _sys.path.insert(0, str(root / "scripts"))
+        for name in list(_sys.modules):
+            if name == "check_doc_claims":
+                del _sys.modules[name]
+        from check_doc_claims import CANONICAL_SCOPE_SENTENCE as sentence
+        doc = root / rel
+        text = doc.read_text(encoding="utf-8")
+        words = sentence.split()
+        import re as _re
+        pattern = _re.compile(r"\s+".join(_re.escape(w) for w in words))
+        assert pattern.search(text), f"{rel} does not carry the canonical sentence to remove"
+        doc.write_text(pattern.sub("(sentence removed)", text, count=1), encoding="utf-8")
+    return apply
+
+
 def edit_workflow(old: str, new: str):
     """A change to the workflow above the step level, or to a step's own fields.
 
@@ -567,6 +595,22 @@ FIXTURES = [
     ]
 ] + [
     {
+        "id": f"20{suffix}",
+        "mode": "20",
+        "title": f"the canonical scope sentence removed from {rel}",
+        "apply": drop_canonical_sentence(rel),
+        "regen_manifest": False,
+        "expect": {"build": None, "imports": 0, "policy": 0, "audit": None, "gate": None,
+                   "manifest": 0, "docs": 1},
+        "layer": "docs",
+        "reason": [rel, "the canonical scope disclaimer"],
+        "gate_reason": "",
+    }
+    for suffix, rel in [
+        ("a", "README.md"), ("b", "reports/PROOF.md"), ("c", "reports/TOOLCHAIN.md"),
+    ]
+] + [
+    {
         "id": "14",
         "mode": "14",
         "title": "an entry removed from the manifest's mandatory file list",
@@ -629,9 +673,9 @@ STAGES = ["build", "imports", "policy", "audit", "gate", "manifest", "docs"]
 DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b", "7a", "7b", "7c", "7d", "8",
                  "9a", "9b", "9c", "10a", "10b", "10c", "12a", "12b", "12c",
                  "15a", "15b", "15c", "16a", "16b", "16c", "16d",
-                 "17", "18", "19a", "19b", "19c", "14", "11")
+                 "17", "18", "19a", "19b", "19c", "20a", "20b", "20c", "14", "11")
 DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "14",
-                  "15", "16", "17", "18", "19")
+                  "15", "16", "17", "18", "19", "20")
 REQUIRED_KEYS = {
     "id", "mode", "title", "apply", "regen_manifest", "expect", "layer", "reason", "gate_reason",
 }

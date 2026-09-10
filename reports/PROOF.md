@@ -28,7 +28,7 @@ document" below. The four:
   declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
   because nothing was checked. It is a layer on top of the environment audit and never a
   substitute for it.
-* **The regression fixtures** — `scripts/regression_fixtures.py`. 35 fixture runs covering 18
+* **The regression fixtures** — `scripts/regression_fixtures.py`. 38 fixture runs covering 19
   failure modes of this repository, each applied to a throwaway copy of it, each required to fail
   *and* to fail at the layer that owns it, *and* to fail `./scripts/check_axioms.sh` itself with
   the diagnostic that names that layer. This is what keeps the other three honest: a layer that stopped working
@@ -154,8 +154,10 @@ if something is not on it, it is not machine-checked, whatever else these docume
      but overstated its own safety: it executed text from a Markdown file in the working
      directory, with only `uname` shadowed and no timeout. Parsing a known small form is both
      stricter and free of that.
-   * **What each labelled block actually runs is not compared.** A comparison of command sets
-     lived here and was **removed**. It produced two defects of its own in two rounds: it first
+   * **The order and identity of the workflow's steps are machine-checked against the published
+     install script's labels; what each step actually runs is not, and is maintained by hand.**
+     A comparison of command sets lived here and was **removed**. It produced two defects of
+     its own in two rounds: it first
      treated shell it could not read as no commands at all — so `CI_X=1 node …`, `command node …`,
      `trap 'node …' EXIT` and `if node …; then` all compared as equal — and then, once that was
      fixed, it turned out to declare `rm`, `mv`, `mkdir`, `cd` and `export` indifferent, so
@@ -207,7 +209,10 @@ rewording a checked sentence out of the checker's reach fails CI rather than esc
 not as a hedge: the mathematical account and every argument made in prose; the I-D and RFC section
 references; the lemma tables; the boundary text; the build timings; the host triple and local
 `lake` path recorded at the top of `reports/TOOLCHAIN.md`, which are a record of one past run on
-one machine and cannot be re-derived here; what the published install script actually *does* when
+one machine and cannot be re-derived here; **the absence of statements that contradict the
+canonical scope sentence** — its *presence* in all three documents is required and checked, so the
+boundary always travels beside the promise, but nothing prevents a second sentence nearby from
+promising more; what the published install script actually *does* when
 executed, as opposed to that it parses and is labelled in step with CI; **which commands each
 workflow step runs, and whether the published script runs the same ones** — the comparison that
 checked this was removed after two defects of its own, and it is now maintained by hand and rests
@@ -502,7 +507,7 @@ a library that just finished building — the two conditions cannot both hold.
 
 ### Required regression tests
 
-**35 fixture runs covering 18 failure modes** — eighteen ways for this pipeline to be wrong;
+**38 fixture runs covering 19 failure modes** — nineteen ways for this pipeline to be wrong;
 several modes take more than one run because the same mistake has more than one spelling. Mode 6
 is exercised twice with a different set of layers active (6 and 6b), mode 7 once per forbidden
 lexeme (7a–7d), because a policy rule that no fixture exercises can be deleted without turning
@@ -510,7 +515,8 @@ anything red, mode 9 once per place a Lean file has actually turned up unclassif
 10 once per directory that classification excludes (10a–10c), mode 12 once per kind of executable
 artifact that is not Lean (12a–12c), mode 15 once per step field that changes whether a step runs
 (15a–15c), mode 16 once per way of changing the job or the workflow above the step level
-(16a–16d), and mode 19 once per form of malformed YAML the reader claims to refuse (19a–19c). Each run must make the pipeline exit nonzero **and must be caught by the layer
+(16a–16d), mode 19 once per form of malformed YAML the reader claims to refuse (19a–19c), and
+mode 20 once per document that must carry the canonical scope sentence (20a–20c). Each run must make the pipeline exit nonzero **and must be caught by the layer
 responsible for it** — a fixture that failed for some unrelated reason would satisfy "exits
 nonzero" and prove nothing.
 
@@ -597,10 +603,13 @@ exited 0, `1` = exited nonzero, `-` = not run):
      19a      docs         -         0         0         -         -         0         1   ok
      19b      docs         -         0         0         -         -         0         1   ok
      19c      docs         -         0         0         -         -         0         1   ok
+     20a      docs         -         0         0         -         -         0         1   ok
+     20b      docs         -         0         0         -         -         0         1   ok
+     20c      docs         -         0         0         -         -         0         1   ok
       14   imports         0         1         0         0         1         0         -   ok
       11      docs         -         0         0         -         -         0         1   ok
 
-all 35 fixture run(s) covering 18 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
+all 38 fixture run(s) covering 19 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
 ```
 
 | # | Fragment | Layer under test | Why that layer, and why not another |
@@ -638,6 +647,9 @@ all 35 fixture run(s) covering 18 failure mode(s) behaved as declared: each brok
 | 19a | a duplicate top-level key in `ci.yml` | document claims | A reader that calls itself fail-closed accepted duplicates and silently kept the last: the first was simply lost. |
 | 19b | a duplicate `run:` on a step | document claims | The same at step level. |
 | 19c | a tab in place of indentation | document claims | This reader measures indentation in spaces; a tab would be read at the wrong depth. The file is refused rather than guessed at. |
+| 20a | the canonical scope sentence removed from `README.md` | document claims | The sentence naming the boundary — order and identity of the steps checked, contents not — is required verbatim in all three documents, because the boundary was once stated only in `reports/PROOF.md` while the other two went on promising "the same procedure". One run per document: the requirement is one claim entry per document, and a single run would leave two of them unexercised. |
+| 20b | the same, from `reports/PROOF.md` | document claims | |
+| 20c | the same, from `reports/TOOLCHAIN.md` | document claims | |
 | 14 | `lake-manifest.json` removed from `FIXED_FILES` in `scripts/gen_proof_sha256.py` | covered-artifact coverage | That file carries none of the covered suffixes, so the suffix rule says nothing about it, and the only thing that used to protect it was a list inside the very script an edit would touch — dropping the entry produced a shorter manifest and a green run. `scripts/check_imports.py` now declares the build and pin files separately and requires the two lists to be equal. |
 | 11 | An extra `FreeBSD/x86_64)` branch in the published install script, selecting the Linux archive | document claims | Every required branch and the `*)` default remain, and the set of archives offered is unchanged — which is why the previous version of the platform check passed it. It asked whether the recorded platforms were covered, not whether anything else was, so a platform quietly stopped being refused and started receiving another platform's build. The branch set must now equal the declared one exactly. This is the one fixture whose subject lives in a document rather than in the sources, so it is also the only one that runs `scripts/check_doc_claims.py`. |
 

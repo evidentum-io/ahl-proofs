@@ -102,7 +102,42 @@ DECLARED_STRUCTURAL_CHECKS = (
     "the published install script's CI step labels match .github/workflows/ci.yml",
     "the published install script selects the recorded archive for every recorded platform",
 )
+# One sentence, required verbatim in all three documents.
+#
+# The failure it answers: a comparison of command sets was removed, `reports/PROOF.md` was
+# rewritten to say so, and `README.md` and `reports/TOOLCHAIN.md` went on promising "the same
+# procedure" and "step for step" — the promise outlived the code that kept it, and the reader was
+# told the stronger thing in two files out of three. A ban on words like "equivalent" was
+# considered and rejected: these documents must discuss equivalence in order to deny it, so a ban
+# would need exceptions, and exceptions are where things hide. This is the opposite shape — a
+# **positive** requirement, checked by the same mechanism as every other claim: the sentence is
+# either present, word for word, or the run fails.
+#
+# What it does not do, stated in the documents as well: it requires the boundary to be *present*
+# next to the promise. It cannot require the absence of some other sentence nearby that
+# contradicts it.
+CANONICAL_SCOPE_SENTENCE = (
+    "The order and identity of the workflow's steps are machine-checked against the published "
+    "install script's labels; what each step actually runs is not, and is maintained by hand."
+)
+
+
+def canonical_pattern(sentence: str) -> str:
+    r"""A regex matching `sentence` across the line wrapping Markdown will impose on it.
+
+    Words are escaped and joined with `\s+`, so re-flowing a paragraph does not break the check
+    while changing a word does. One group captures a fixed word, so the sentence travels through
+    the same (pattern, expected values) machinery as every numeric claim rather than needing a
+    mechanism of its own.
+    """
+    words = [re.escape(w) for w in sentence.split()]
+    marker = words.index(re.escape("not,"))
+    words[marker] = "(not),"
+    return r"\s+".join(words)
+
+
 DECLARED_CLAIM_LABELS = frozenset({
+    "the canonical scope disclaimer",
     "constant and theorem counts",
     "theorem count",
     "theorem count and the number of files they live in",
@@ -1174,6 +1209,14 @@ def main() -> int:
         ("reports/PROOF.md", r"\((\d+) jobs\)", (jobs,), "the lake job count"),
         ("reports/PROOF.md", r"all (\d+) jobs", (jobs,), "the lake job count"),
         ("reports/TOOLCHAIN.md", r"`?(\d+) jobs`?", (jobs,), "the lake job count"),
+        # The canonical scope disclaimer, one entry per document: removing the sentence from any
+        # single one of the three fails.
+        ("README.md", canonical_pattern(CANONICAL_SCOPE_SENTENCE), ("not",),
+         "the canonical scope disclaimer"),
+        ("reports/PROOF.md", canonical_pattern(CANONICAL_SCOPE_SENTENCE), ("not",),
+         "the canonical scope disclaimer"),
+        ("reports/TOOLCHAIN.md", canonical_pattern(CANONICAL_SCOPE_SENTENCE), ("not",),
+         "the canonical scope disclaimer"),
     ] + [
         # Every platform archive digest offered by TOOLCHAIN.md, not only the one CI installs.
         ("reports/TOOLCHAIN.md",

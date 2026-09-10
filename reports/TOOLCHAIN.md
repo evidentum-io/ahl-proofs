@@ -43,9 +43,10 @@ why it is a file and why every guard is `exit 1` rather than a printed warning.
 **What is checked, and what is not.** `scripts/check_doc_claims.py` checks that this script is
 published once, that it parses (`sh -n`), that its `# CI step N [key]` labels cover the workflow's
 steps exactly once each in order with each key occurring in that step's name, and that its
-platform-selection block offers exactly the recorded archives and digests. **It does not compare
-what each block runs against what the corresponding CI step runs.** A comparison of command sets
-did that until it produced two defects of its own and was removed; replacing
+platform-selection block offers exactly the recorded archives and digests. **The order and identity of the workflow's steps are machine-checked against the published install
+script's labels; what each step actually runs is not, and is maintained by hand.**
+A comparison of command sets did that until it produced two defects of its own and was removed;
+replacing
 `python3 scripts/regression_fixtures.py` here with `:` would pass every check listed above. Which
 commands each block runs is maintained by hand and rests on review of the diff. The exhaustive
 list of what is machine-checked about these documents is in `reports/PROOF.md`, "What is checked
@@ -224,7 +225,7 @@ echo "ALL CHECKS PASSED with the verified toolchain at ${PREFIX}"
 
 The script exits 0 only if every step passed: the three toolchain-free checks, the pin
 cross-check, the archive digest, the `lean` on `PATH` being the one just installed and reporting
-the expected version and release commit, the cold build, 35 fixture runs covering 18 failure modes,
+the expected version and release commit, the cold build, 38 fixture runs covering 19 failure modes,
 the three-layer proof gate, and the document-claim check.
 
 **What this section claims, exactly.** Running this file — the whole file, not a subset of its

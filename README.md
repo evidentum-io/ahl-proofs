@@ -111,7 +111,7 @@ The gate is `./scripts/check_axioms.sh`, three layers in order:
    checked here against every constant on every run, at a finer grain than the 102 named
    theorems, and it still holds exactly.
 
-**35 fixture runs covering 18 failure modes** — an unimported module, an `example` under a locally
+**38 fixture runs covering 19 failure modes** — an unimported module, an `example` under a locally
 relaxed `warningAsError`, a locally skipped kernel typecheck, an unfinished theorem, a top-level
 `axiom`, a new file left out of the hash manifest (run twice, with and without its `import` line,
 to show the manifest layer works independently of the import invariant), a forbidden lexeme in the
@@ -125,7 +125,7 @@ stopped propagating an exit status is caught too. It also validates its own rost
 starting, so a truncated or emptied fixture list fails instead of reporting success over nothing.
 The working tree is never written to, and the runner hashes every file under it except `.git/`,
 `.lake/` and `__pycache__/` before and after to prove it. `reports/PROOF.md`, "Required regression
-tests", lists all 35 runs with the exit status of every stage.
+tests", lists all 38 runs with the exit status of every stage.
 
 A defined list of claims in this file, in `reports/PROOF.md` and in `reports/TOOLCHAIN.md` is
 itself checked in CI by `scripts/check_doc_claims.py`: four published transcripts, the counts, the
@@ -139,10 +139,11 @@ only, plus the declared runner image, the declared job environment, the exact `u
 triggers with no branch filter — so neither a step nor the whole job can be disabled with
 `if: false`, and the checkout action cannot be swapped for another repository.
 
-**What each step actually runs is not compared with anything.** A comparison of command sets did
-that until it produced two defects of its own and was removed; which commands a step runs, and
-whether the published script runs the same ones, is maintained by hand and rests on review of the
-diff. `.github/workflows/ci.yml` is the source of truth for the step order and is read
+**The order and identity of the workflow's steps are machine-checked against the published install
+script's labels; what each step actually runs is not, and is maintained by hand.**
+A comparison of command sets did that until it produced two defects of its own and was removed;
+whether the published script runs the same commands as the step it is labelled for rests on review
+of the diff. `.github/workflows/ci.yml` is the source of truth for the step order and is read
 structurally, by a dependency-free reader that rejects anything outside the shape it understands
 rather than guessing. The checked list is enumerated exhaustively under "What is checked about
 this document" in `reports/PROOF.md`, and everything outside it — the mathematics, the section
