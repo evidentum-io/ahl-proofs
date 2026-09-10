@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Machine-checked regression fixtures for the proof gate.
 
-`reports/PROOF.md` claims that 6 ways of breaking this repository each fail the pipeline (in 7
-fixture runs — one mode is exercised twice, with different layers active), and
+`reports/PROOF.md` claims that 7 ways of breaking this repository each fail the pipeline (in 11
+fixture runs — mode 6 is exercised twice with different layers active, and mode 7 once per
+forbidden lexeme), and
 names the layer that catches each one. Until this script existed, that claim was a report of
 something a person once did by hand — nothing in CI re-established it, so nothing stopped a
 change from quietly removing a layer while the prose went on describing it. This script turns the
@@ -12,10 +13,20 @@ claim into a test that runs on every CI run.
 
 Not merely "the pipeline exits nonzero". A fixture that failed for an unrelated reason would
 satisfy that and prove nothing, so each fixture declares the **exact exit status expected from
-every stage** — `lake build`, the import invariant, the source policy, the environment audit, the
-hash manifest — plus the one layer that is *under test* and a substring its output must contain.
-All of that has to match, or the fixture fails. That is what makes this a test of the layer
-rather than a test of "something went wrong somewhere".
+every stage** — `lake build`, the import invariant, the source policy, the environment audit,
+`./scripts/check_axioms.sh` itself, and the hash manifest — plus the one layer that is *under
+test* and a substring its output must contain. All of that has to match, or the fixture fails.
+That is what makes this a test of the layer rather than a test of "something went wrong
+somewhere".
+
+The `gate` stage is there because every other stage runs a check *directly*, and the pipeline the
+documents actually name is the shell script that wraps them. A wrapper that lost an exit status —
+a dropped `$?`, a stray `|| true`, a reordered branch — would leave every individual stage
+reporting exactly what it reports today while CI went green on a corrupted tree. So each fixture
+also runs `./scripts/check_axioms.sh` on its corrupted copy and requires both the exit status and
+the diagnostic line naming the layer that failed. Fixture 6b is the one that requires the gate to
+*pass*: only the hash manifest is stale there, and the manifest is CI's own step rather than part
+of the gate.
 
 The environment audit is skipped (recorded as `-`) for a fixture whose `lake build` fails: with no
 `.olean`s there is nothing for it to import, so its exit status would say nothing about the audit.
@@ -67,8 +78,14 @@ ROOT_MODULE_FILE = "AhlProofs.lean"
 # repository that bans them contains them. The policy scans `*.lean` only, so a literal spelling
 # here would break nothing — this is for the reader, not for the checker.
 PLACEHOLDER = "sor" + "ry"
+ADMIT = "ad" + "mit"
 WARN_OFF = "warningAsError" + " false"
 SKIP_TC = "debug." + "skipKernelTC"
+
+# Every lexeme `scripts/check_source_policy.py` forbids, each exercised by its own fixture below.
+# Testing three of the four and calling the rule covered was a real gap: deleting the `admit`
+# pattern from the policy used to leave this runner green.
+FORBIDDEN_LEXEMES = [PLACEHOLDER, ADMIT, WARN_OFF, SKIP_TC]
 
 
 def append(root: pathlib.Path, rel: str, text: str) -> None:
@@ -79,6 +96,20 @@ def append(root: pathlib.Path, rel: str, text: str) -> None:
 def prepend(root: pathlib.Path, rel: str, text: str) -> None:
     p = root / rel
     p.write_text(text + p.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def comment_lexeme(lexeme: str):
+    """A fixture that writes a forbidden lexeme into an ordinary Lean line comment.
+
+    Nothing else changes: the comment does not reach the elaborator, so `lake build` still
+    succeeds, the environment audit still finds nothing, and the *only* thing standing between
+    this tree and a green run is the source policy. That isolates one policy rule per fixture —
+    and it is also the shape the policy claims to have, since the ban is documented as total,
+    comments and string literals included.
+    """
+    def apply(root: pathlib.Path) -> None:
+        append(root, MODEL, f"\n-- {lexeme}\n")
+    return apply
 
 
 def fixture_1(root: pathlib.Path) -> None:
@@ -136,10 +167,18 @@ def fixture_6b(root: pathlib.Path) -> None:
 
 
 # Each entry: expected exit status per stage (None = the stage is not run), the layer under test,
-# and a substring that layer's output must contain. `regen_manifest` reruns
+# a substring that layer's output must contain, and — separately — the diagnostic the whole gate
+# (`./scripts/check_axioms.sh`) must print when it is expected to fail. `regen_manifest` reruns
 # `gen_proof_sha256.py > reports/PROOF.sha256` after applying the fixture, which neutralises the
 # manifest layer so that the layer under test is demonstrably the one doing the work; fixtures
 # where manifest staleness *is* the subject leave it stale.
+#
+# `mode` groups runs that exercise the same failure mode: 6 and 6b are one mode with different
+# layers active, and 7a-7d are one mode — a forbidden lexeme in the sources — once per lexeme.
+GATE_IMPORTS = "GATE FAILED - scripts/check_imports.py exited 1"
+GATE_POLICY = "GATE FAILED - scripts/check_source_policy.py exited 1"
+GATE_AUDIT = "AUDIT FAILED - lake env lean scripts/Audit.lean exited 1"
+
 FIXTURES = [
     {
         "id": "1",
@@ -147,9 +186,10 @@ FIXTURES = [
         "title": "module outside the root module's import list",
         "apply": fixture_1,
         "regen_manifest": True,
-        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "manifest": 0},
+        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1, "manifest": 0},
         "layer": "imports",
         "reason": "is not reachable by imports from AhlProofs.lean",
+        "gate_reason": GATE_IMPORTS,
     },
     {
         "id": "2",
@@ -157,9 +197,10 @@ FIXTURES = [
         "title": "declaration storing no constant, under a locally relaxed build setting",
         "apply": fixture_2,
         "regen_manifest": True,
-        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 0, "manifest": 0},
+        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 0, "gate": 1, "manifest": 0},
         "layer": "policy",
         "reason": f"forbidden lexeme `{WARN_OFF}`",
+        "gate_reason": GATE_POLICY,
     },
     {
         "id": "3",
@@ -167,9 +208,10 @@ FIXTURES = [
         "title": "kernel re-typechecking locally disabled",
         "apply": fixture_3,
         "regen_manifest": True,
-        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 0, "manifest": 0},
+        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 0, "gate": 1, "manifest": 0},
         "layer": "policy",
         "reason": f"forbidden lexeme `{SKIP_TC}`",
+        "gate_reason": GATE_POLICY,
     },
     {
         "id": "4",
@@ -177,9 +219,11 @@ FIXTURES = [
         "title": "ordinary unfinished theorem",
         "apply": fixture_4,
         "regen_manifest": True,
-        "expect": {"build": 1, "imports": 0, "policy": 1, "audit": None, "manifest": 0},
+        "expect": {"build": 1, "imports": 0, "policy": 1, "audit": None, "gate": 1,
+                   "manifest": 0},
         "layer": "build",
         "reason": "declaration uses",
+        "gate_reason": GATE_POLICY,
     },
     {
         "id": "5",
@@ -187,9 +231,10 @@ FIXTURES = [
         "title": "own axiom at top level",
         "apply": fixture_5,
         "regen_manifest": True,
-        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 1, "manifest": 0},
+        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 1, "gate": 1, "manifest": 0},
         "layer": "audit",
         "reason": "own axiom declaration(s)",
+        "gate_reason": GATE_AUDIT,
     },
     {
         "id": "6",
@@ -197,9 +242,10 @@ FIXTURES = [
         "title": "new file under AhlProofs/, manifest left stale",
         "apply": fixture_6,
         "regen_manifest": False,
-        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "manifest": 1},
+        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1, "manifest": 1},
         "layer": "manifest",
         "reason": "reports/PROOF.sha256 is stale",
+        "gate_reason": GATE_IMPORTS,
     },
     {
         "id": "6b",
@@ -207,13 +253,36 @@ FIXTURES = [
         "title": "same file, imported — isolating the manifest layer from the import invariant",
         "apply": fixture_6b,
         "regen_manifest": False,
-        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "manifest": 1},
+        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 1},
         "layer": "manifest",
         "reason": "reports/PROOF.sha256 is stale",
+        # The gate passes here, and must: the hash manifest is checked by CI as its own step and
+        # is deliberately not part of ./scripts/check_axioms.sh. A fixture whose only failing
+        # stage is the manifest is exactly how that separation gets demonstrated.
+        "gate_reason": "",
     },
+] + [
+    {
+        "id": f"7{suffix}",
+        "mode": "7",
+        "title": f"forbidden lexeme `{lexeme}` in a Lean comment",
+        "apply": comment_lexeme(lexeme),
+        "regen_manifest": True,
+        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 0, "gate": 1, "manifest": 0},
+        "layer": "policy",
+        "reason": f"forbidden lexeme `{lexeme}`",
+        "gate_reason": GATE_POLICY,
+    }
+    for suffix, lexeme in zip("abcd", FORBIDDEN_LEXEMES)
 ]
 
-STAGES = ["build", "imports", "policy", "audit", "manifest"]
+# `gate` is `./scripts/check_axioms.sh` itself, run on the corrupted copy. It is not a fourth
+# layer: it re-runs the three below it. It is here because everything else in this file calls the
+# individual checks directly, and a wrapper that stopped propagating their exit status — a lost
+# `$?`, a stray `|| true`, a reordered `if` — would leave every individual stage reporting exactly
+# what it reports now while CI went green on a broken tree. Fixtures that assert the individual
+# stages prove the layers work; this stage proves the pipeline the documents actually name does.
+STAGES = ["build", "imports", "policy", "audit", "gate", "manifest"]
 
 # The roster this runner is required to execute, declared separately from the fixtures themselves
 # and checked against them before anything runs.
@@ -230,9 +299,11 @@ STAGES = ["build", "imports", "policy", "audit", "manifest"]
 # more expensive: `scripts/check_doc_claims.py` compares this roster against the fixture table
 # published in reports/PROOF.md, so the same edit has to be made in three places, in one commit,
 # to go unnoticed. See "Trust boundary" in reports/PROOF.md.
-DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b")
-DECLARED_MODES = ("1", "2", "3", "4", "5", "6")
-REQUIRED_KEYS = {"id", "mode", "title", "apply", "regen_manifest", "expect", "layer", "reason"}
+DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b", "7a", "7b", "7c", "7d")
+DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7")
+REQUIRED_KEYS = {
+    "id", "mode", "title", "apply", "regen_manifest", "expect", "layer", "reason", "gate_reason",
+}
 
 
 def validate_roster() -> list[str]:
@@ -282,10 +353,23 @@ def validate_roster() -> list[str]:
             )
         if not str(f.get("reason", "")).strip():
             problems.append(f"fixture {fid}: no expected reason substring for its layer")
+        gate_expected = f["expect"].get("gate")
+        gate_reason = str(f.get("gate_reason", "")).strip()
+        if gate_expected not in (0, None) and not gate_reason:
+            problems.append(
+                f"fixture {fid}: the gate is declared to fail but no diagnostic is required of "
+                "it — a fixture that accepts any nonzero exit from ./scripts/check_axioms.sh "
+                "would not notice it failing for the wrong reason"
+            )
+        if gate_expected == 0 and gate_reason:
+            problems.append(
+                f"fixture {fid}: the gate is declared to pass but a diagnostic is required of it"
+            )
     return problems
 
 COMMANDS = {
     "build": ["lake", "build"],
+    "gate": ["./scripts/check_axioms.sh"],
     "imports": [sys.executable, "scripts/check_imports.py"],
     "policy": [sys.executable, "scripts/check_source_policy.py"],
     "audit": ["lake", "env", "lean", "scripts/Audit.lean"],
@@ -366,6 +450,28 @@ def run_fixture(spec: dict, root: pathlib.Path, verbose: bool) -> tuple[bool, di
                 f"{spec['reason']!r}; got:\n{outputs.get(layer, '')[:800]}"
             )
 
+        # The gate as a whole, not just the layer inside it. Asserting only the individual
+        # commands would leave ./scripts/check_axioms.sh free to swallow their exit status.
+        gate_expected = spec["expect"].get("gate")
+        if gate_expected not in (0, None):
+            if actual.get("gate") in (0, None):
+                problems.append(
+                    "./scripts/check_axioms.sh exited "
+                    f"{actual.get('gate')} on a tree that fails `{layer}` — the pipeline the "
+                    "documents name did not break, whatever the individual commands report"
+                )
+            elif spec["gate_reason"] not in outputs.get("gate", ""):
+                problems.append(
+                    "./scripts/check_axioms.sh failed but did not print the expected diagnostic "
+                    f"{spec['gate_reason']!r}; got:\n{outputs.get('gate', '')[-800:]}"
+                )
+        elif gate_expected == 0 and actual.get("gate") != 0:
+            problems.append(
+                f"./scripts/check_axioms.sh exited {actual.get('gate')} but this fixture leaves "
+                "every layer it covers intact — only the hash manifest, which the gate does not "
+                "check, is supposed to fail here"
+            )
+
         if not any(rc not in (0, None) for rc in actual.values()):
             problems.append("the pipeline exited zero everywhere — this fixture must break it")
     finally:
@@ -375,7 +481,7 @@ def run_fixture(spec: dict, root: pathlib.Path, verbose: bool) -> tuple[bool, di
     return not problems, actual, problems
 
 
-def render_table(rows: list[tuple[str, str, dict, bool]], hashed: int) -> str:
+def render_table(rows: list[tuple[str, str, dict, bool]], hashed: int, passed: bool) -> str:
     """The runner's own report, in the exact form a passing run prints it.
 
     `--expected-table` renders this from the *declared* expectations without running anything, so
@@ -393,13 +499,21 @@ def render_table(rows: list[tuple[str, str, dict, bool]], hashed: int) -> str:
         )
         lines.append(f"{fid:>8}  {layer:>8}  {cells}   {'ok' if ok else 'FAILED'}")
     lines.append("")
-    lines.append(
-        f"all {len(DECLARED_RUNS)} fixture run(s) covering {len(DECLARED_MODES)} failure mode(s) "
-        "behaved as declared: each broke the pipeline, and each was caught by the layer named "
-        f"for it. Working tree unchanged ({hashed} file(s) hashed before and after, excluding "
-        + ", ".join(sorted(f"{d}/" for d in EXCLUDED))
-        + ")."
-    )
+    excluded = ", ".join(sorted(f"{d}/" for d in EXCLUDED))
+    if passed:
+        lines.append(
+            f"all {len(DECLARED_RUNS)} fixture run(s) covering {len(DECLARED_MODES)} failure "
+            "mode(s) behaved as declared: each broke the pipeline, and each was caught by the "
+            f"layer named for it. Working tree unchanged ({hashed} file(s) hashed before and "
+            f"after, excluding {excluded})."
+        )
+    else:
+        failed = sum(1 for _, _, _, ok in rows if not ok)
+        lines.append(
+            f"FAILED: {failed} of {len(rows)} fixture run(s) did not behave as declared — see the "
+            f"reasons above. Working tree unchanged ({hashed} file(s) hashed before and after, "
+            f"excluding {excluded})."
+        )
     return "\n".join(lines)
 
 
@@ -433,7 +547,7 @@ def main() -> int:
 
     if args.expected_table:
         rows = [(f["id"], f["layer"], f["expect"], True) for f in FIXTURES]
-        print(render_table(rows, len(snapshot(root))))
+        print(render_table(rows, len(snapshot(root)), passed=True))
         return 0
 
     before = snapshot(root)
@@ -470,7 +584,7 @@ def main() -> int:
             "it hashes byte-for-byte identical: " + ", ".join(changed)
         )
 
-    print(render_table(rows, len(before)))
+    print(render_table(rows, len(before), passed=not failures))
 
     if failures:
         print("\nregression_fixtures.py: FAIL", file=sys.stderr)

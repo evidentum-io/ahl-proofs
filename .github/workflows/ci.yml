@@ -114,14 +114,17 @@ jobs:
           lake clean
           time lake build
 
-      # The claim in reports/PROOF.md that 6 failure modes, exercised by 7 fixture runs, each
+      # The claim in reports/PROOF.md that 7 failure modes, exercised by 11 fixture runs, each
       # break this pipeline, and that a named layer catches each one, is re-established here on
-      # every run rather than
-      # reported from a person's memory of having tried it once. Each fixture is applied to a
-      # throwaway copy of the repository under the system temp directory — the working tree is
-      # never written to, and the runner hashes every file under it before and after to prove
-      # that. It runs BEFORE the gate below on purpose: the gate then has to pass on the same
-      # tree, which is what shows the fixtures left nothing behind.
+      # every run rather than reported from a person's memory of having tried it once. Each
+      # fixture is applied to a throwaway copy of the repository under the system temp directory —
+      # the working tree is never written to, and the runner hashes every file under it (except
+      # .git/, .lake/ and __pycache__/) before and after to prove that. Each fixture also runs
+      # ./scripts/check_axioms.sh on its corrupted copy and requires it to fail with the
+      # diagnostic naming the failing layer: without that, the only tree this job ever runs the
+      # gate on is a healthy one, and a wrapper that stopped propagating an exit status would go
+      # unnoticed. This step runs BEFORE the gate below on purpose: the gate then has to pass on
+      # the same tree, which is what shows the fixtures left nothing behind.
       - name: Regression fixtures (each must fail, and fail at its own layer)
         run: python3 scripts/regression_fixtures.py
 

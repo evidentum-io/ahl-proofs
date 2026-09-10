@@ -47,6 +47,28 @@ import subprocess
 import sys
 
 
+# The SHA-256 of every Lean 4.31.0 release archive `reports/TOOLCHAIN.md` offers, recorded here so
+# that the table in that document cannot drift on its own. Retrieved 2026-09-09 from GitHub's
+# release API, re-derivable with:
+#
+#   curl -fsSL https://api.github.com/repos/leanprover/lean4/releases/tags/v4.31.0 \
+#     | python3 -c 'import json,sys; [print(a["digest"], a["name"]) for a in json.load(sys.stdin)["assets"]]'
+#
+# Same-commit caveat as everything else here: these constants live in the repository they check.
+# The linux entry is additionally required to equal the value .github/workflows/ci.yml installs,
+# so the digest CI actually verifies and the digest the document offers cannot diverge.
+LEAN_RELEASE_DIGESTS = {
+    "lean-4.31.0-linux.tar.zst":
+        "07a633cc8d9151cbc08825ea4cdda50d4b02a2c9cb852c0131b13046f49cad7f",
+    "lean-4.31.0-linux_aarch64.tar.zst":
+        "b1bf1d3c586b76cf4a86212a595d8b9edd99f438a41cce85d5780fa9347c811b",
+    "lean-4.31.0-darwin_aarch64.tar.zst":
+        "264105500c8abdf37b68ffe03390a783ed259807807222698da8dd92d6ce0a27",
+    "lean-4.31.0-darwin.tar.zst":
+        "6dac7a8f9d6d0bc339b4ea9376c06a88f3fd1a7f462beb3c7ded9fbc934f3fb5",
+}
+
+
 def run(cmd: list[str], cwd: pathlib.Path) -> tuple[int, str]:
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     return proc.returncode, proc.stdout + proc.stderr
@@ -60,21 +82,68 @@ def extract(pattern: str, text: str, label: str, problems: list[str]) -> str | N
     return m.group(1)
 
 
-def block_diff(doc: str, expected: str) -> str:
-    """Best-effort diff between `expected` and the fenced block in `doc` that starts like it."""
-    first = expected.splitlines()[0]
-    for block in re.findall(r"```[a-z]*\n(.*?)```", doc, flags=re.S):
-        if block.splitlines() and block.splitlines()[0].rstrip() == first.rstrip():
-            return "\n".join(
+def fenced_blocks(text: str) -> list[tuple[int, str]]:
+    """Every fenced code block in `text`, as (offset of the block's first line, content)."""
+    return [(m.start(1), m.group(1)) for m in re.finditer(r"```[a-z]*\n(.*?)```", text, flags=re.S)]
+
+
+def section_span(text: str, heading: str) -> tuple[int, int] | None:
+    """The half-open span of the section introduced by `heading`, up to the next heading."""
+    m = re.search(rf"^{re.escape(heading)}\s*$", text, flags=re.M)
+    if not m:
+        return None
+    nxt = re.search(r"^#{1,6} ", text[m.end():], flags=re.M)
+    return (m.end(), m.end() + nxt.start() if nxt else len(text))
+
+
+def check_transcript(doc: str, doc_name: str, heading: str, expected: str,
+                     label: str, problems: list[str]) -> None:
+    """Require exactly one block whose first line matches, inside the named section, equal to
+    `expected`.
+
+    Substring containment is not enough and was the previous bug: a document could keep one
+    correct block and grow a second, stale or contradictory one beside it, and still pass. So:
+    the block is located by its first line, there must be exactly one such block *in the whole
+    document*, it must sit inside the section that is supposed to hold it, and it must be equal
+    to what the command prints — not merely contain it.
+    """
+    marker = expected.splitlines()[0].rstrip()
+    hits = [(off, body) for off, body in fenced_blocks(doc)
+            if body.splitlines() and body.splitlines()[0].rstrip() == marker]
+    if not hits:
+        problems.append(
+            f"{doc_name}: no fenced block starts with {marker!r} — {label} is not published at "
+            "all, so nothing was compared"
+        )
+        return
+    if len(hits) > 1:
+        problems.append(
+            f"{doc_name}: {len(hits)} fenced blocks start with {marker!r}. Exactly one copy of "
+            f"{label} may be published; otherwise a stale copy can sit beside a correct one and "
+            "this check would still pass"
+        )
+        return
+    off, body = hits[0]
+    span = section_span(doc, heading)
+    if span is None:
+        problems.append(f"{doc_name}: section {heading!r}, which must hold {label}, is gone")
+    elif not (span[0] <= off < span[1]):
+        problems.append(
+            f"{doc_name}: {label} is published outside the section {heading!r} it belongs to"
+        )
+    if body.rstrip("\n") != expected.rstrip("\n"):
+        problems.append(
+            f"{doc_name}: {label} is not what the command prints now.\n"
+            + "\n".join(
                 difflib.unified_diff(
-                    block.rstrip("\n").splitlines(),
-                    expected.splitlines(),
+                    body.rstrip("\n").splitlines(),
+                    expected.rstrip("\n").splitlines(),
                     lineterm="",
                     fromfile="published in the document",
                     tofile="printed by the command now",
                 )
             )
-    return "(no fenced block in the document starts with that line at all)"
+        )
 
 
 def main() -> int:
@@ -119,6 +188,17 @@ def main() -> int:
         print("FAIL: scripts/list_theorems.py failed:\n" + theorems_out, file=sys.stderr)
         return 1
 
+    # A cold build, so the transcript published under "lake clean && time lake build" can be
+    # checked for the two things about it that are reproducible: which modules were built, and how
+    # many jobs lake reports. Timings are not checked and are labelled illustrative in the
+    # document — they differ between machines and between runs on one machine.
+    build_rc, build_out = run(["bash", "-c", "lake clean && lake build"], root)
+    if build_rc != 0:
+        print("FAIL: `lake clean && lake build` does not succeed:\n" + build_out, file=sys.stderr)
+        return 1
+    built_modules = set(re.findall(r"Built (\S+)", build_out))
+    jobs = extract(r"\((\d+) jobs\)", build_out, "the lake job count", problems)
+
     import regression_fixtures  # noqa: E402  (path set above; this is the roster's own source)
 
     theorems = len([line for line in theorems_out.splitlines() if line.strip()])
@@ -137,6 +217,18 @@ def main() -> int:
                           problems)
     linux_digest = extract(r'LEAN_ASSET_SHA256:\s*"([^"]+)"', ci, "the pinned archive digest",
                            problems)
+    linux_asset = extract(r'LEAN_ASSET:\s*"([^"]+)"', ci, "the pinned archive name", problems)
+    if linux_asset and linux_asset not in LEAN_RELEASE_DIGESTS:
+        problems.append(
+            f"the archive .github/workflows/ci.yml installs ({linux_asset}) has no digest "
+            "recorded in this script"
+        )
+    elif linux_asset and LEAN_RELEASE_DIGESTS[linux_asset] != linux_digest:
+        problems.append(
+            f"digest mismatch for {linux_asset}: ci.yml has {linux_digest}, this script has "
+            f"{LEAN_RELEASE_DIGESTS[linux_asset]}"
+        )
+
     toolchain_pin = (root / "lean-toolchain").read_text(encoding="utf-8").strip()
     if lean_version and toolchain_pin != f"leanprover/lean4:v{lean_version}":
         problems.append(
@@ -153,18 +245,49 @@ def main() -> int:
 
     # ---------------------------------------------------------------- transcript claims ---------
     transcripts = [
-        ("reports/PROOF.md", "the ./scripts/check_axioms.sh transcript",
+        ("reports/PROOF.md", "### `./scripts/check_axioms.sh`",
+         "the ./scripts/check_axioms.sh transcript",
          "$ ./scripts/check_axioms.sh\n" + gate_out.rstrip("\n")),
-        ("reports/PROOF.md", "the manifest --check line",
+        ("reports/PROOF.md",
+         "### Binding: what `reports/PROOF.sha256` does and does not give you",
+         "the manifest --check line",
          "$ python3 scripts/gen_proof_sha256.py --check\n" + manifest_out.strip()),
-        ("reports/PROOF.md", "the regression-fixture table", table_out.rstrip("\n")),
+        ("reports/PROOF.md", "### Required regression tests",
+         "the regression-fixture table", table_out.rstrip("\n")),
     ]
-    for doc_name, label, expected in transcripts:
-        if expected not in docs[doc_name]:
+    for doc_name, heading, label, expected in transcripts:
+        check_transcript(docs[doc_name], doc_name, heading, expected, label, problems)
+
+    # The build transcript, checked for its reproducible content only: the set of modules built
+    # and the job count. Located as a single block in its own section the same way.
+    build_heading = "### `lake clean && time lake build`"
+    build_hits = [body for _, body in fenced_blocks(docs["reports/PROOF.md"])
+                  if body.splitlines()
+                  and body.splitlines()[0].rstrip() == "$ lake clean && time lake build"]
+    if len(build_hits) != 1:
+        problems.append(
+            f"reports/PROOF.md: expected exactly one published `lake clean && time lake build` "
+            f"transcript, found {len(build_hits)}"
+        )
+    else:
+        published_modules = set(re.findall(r"Built (\S+)", build_hits[0]))
+        published_jobs = re.search(r"\((\d+) jobs\)", build_hits[0])
+        if published_modules != built_modules:
             problems.append(
-                f"{doc_name}: {label} is not what the command prints now.\n"
-                + block_diff(docs[doc_name], expected)
+                "reports/PROOF.md: the published build transcript lists modules "
+                f"{sorted(published_modules)}, the build produced {sorted(built_modules)}"
             )
+        if not published_jobs:
+            problems.append(
+                "reports/PROOF.md: the published build transcript does not state a job count"
+            )
+        elif jobs and published_jobs.group(1) != jobs:
+            problems.append(
+                f"reports/PROOF.md: the published build transcript says "
+                f"{published_jobs.group(1)} jobs, lake reports {jobs}"
+            )
+        if section_span(docs["reports/PROOF.md"], build_heading) is None:
+            problems.append(f"reports/PROOF.md: section {build_heading!r} is gone")
 
     # ---------------------------------------------------------------- prose claims --------------
     # (document, pattern, expected values for the pattern's groups, label)
@@ -201,8 +324,25 @@ def main() -> int:
          "the pinned Lean version"),
         ("reports/TOOLCHAIN.md", r"EXPECTED_LEAN_COMMIT=([0-9a-f]{40})", (lean_commit,),
          "the pinned release commit"),
-        ("reports/TOOLCHAIN.md", r"`lean-4\.[0-9.]+-linux\.tar\.zst` \| `([0-9a-f]{64})`",
-         (linux_digest,), "the Linux archive digest"),
+        # The toolchain tag, wherever the documents spell it out.
+        ("README.md", r"leanprover/lean4:v([0-9.]+)", (lean_version,), "the pinned toolchain tag"),
+        ("reports/PROOF.md", r"leanprover/lean4:v([0-9.]+)", (lean_version,),
+         "the pinned toolchain tag"),
+        ("reports/TOOLCHAIN.md", r"leanprover/lean4:v([0-9.]+)", (lean_version,),
+         "the pinned toolchain tag"),
+        # The version inside the recorded `lean --version` line at the top of TOOLCHAIN.md.
+        ("reports/TOOLCHAIN.md", r"Lean \(version ([0-9.]+),", (lean_version,),
+         "the version in the recorded toolchain self-report"),
+        # Every `N jobs` figure, against what lake reported on the cold build above.
+        ("reports/PROOF.md", r"\((\d+) jobs\)", (jobs,), "the lake job count"),
+        ("reports/PROOF.md", r"all (\d+) jobs", (jobs,), "the lake job count"),
+        ("reports/TOOLCHAIN.md", r"`?(\d+) jobs`?", (jobs,), "the lake job count"),
+    ] + [
+        # Every platform archive digest offered by TOOLCHAIN.md, not only the one CI installs.
+        ("reports/TOOLCHAIN.md",
+         r"`" + re.escape(asset) + r"` \| `([0-9a-f]{64})`", (digest,),
+         f"the {asset} digest")
+        for asset, digest in LEAN_RELEASE_DIGESTS.items()
     ]
     if not claims:
         print("check_doc_claims.py: FAIL — no claims registered", file=sys.stderr)
@@ -258,11 +398,13 @@ def main() -> int:
         return 1
 
     print(
-        f"document claims hold: {len(transcripts)} published transcript(s) match their commands "
-        f"verbatim; {len(claims)} numeric/pin claim(s) match the checks "
-        f"({theorems} theorems in {theorem_files} files, {constants} constants, "
+        f"document claims hold: {len(transcripts)} published transcript(s) matched exactly (one "
+        f"block each, in its own section); the build transcript matched on modules "
+        f"({len(built_modules)}) and job count ({jobs}); {len(claims)} numeric/pin claim(s) "
+        f"matched ({theorems} theorems in {theorem_files} files, {constants} constants, "
         f"{manifest_files} files in the manifest, {runs} fixture runs covering {modes} failure "
-        f"modes, Lean {lean_version} commit {lean_commit[:12]}…)"
+        f"modes, {len(LEAN_RELEASE_DIGESTS)} release digests, Lean {lean_version} commit "
+        f"{lean_commit[:12]}…)"
     )
     return 0
 

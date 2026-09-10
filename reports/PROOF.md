@@ -28,9 +28,10 @@ document" below. The four:
   declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
   because nothing was checked. It is a layer on top of the environment audit and never a
   substitute for it.
-* **The regression fixtures** — `scripts/regression_fixtures.py`. 7 fixture runs covering 6
+* **The regression fixtures** — `scripts/regression_fixtures.py`. 11 fixture runs covering 7
   failure modes of this repository, each applied to a throwaway copy of it, each required to fail
-  *and* to fail at the layer that owns it. This is what keeps the other three honest: a layer that stopped working
+  *and* to fail at the layer that owns it, *and* to fail `./scripts/check_axioms.sh` itself with
+  the diagnostic that names that layer. This is what keeps the other three honest: a layer that stopped working
   would turn a fixture green, and a green fixture is a red CI run. It is run in CI immediately
   before the gate, so the gate has to pass on the same tree afterwards. See "Required regression
   tests".
@@ -43,27 +44,41 @@ document" below. The four:
 ### What is checked about this document
 
 `scripts/check_doc_claims.py`, run in CI after the gate, compares this document, `README.md` and
-`reports/TOOLCHAIN.md` against what the checks actually print:
+`reports/TOOLCHAIN.md` against what the checks actually print. **This is the exhaustive list** —
+if something is not on it, it is not machine-checked, whatever else these documents say:
 
-* the `./scripts/check_axioms.sh` transcript, the `gen_proof_sha256.py --check` line and the
-  regression-fixture table published below must be **verbatim** what those commands produce now;
-* every count repeated in a sentence — constants scanned, named theorems and the files they live
-  in, files in the hash manifest, fixture runs and failure modes — must equal the computed value,
-  in every place it appears;
-* the Lean version, release commit and Linux archive digest quoted here must match
-  `.github/workflows/ci.yml` and `lean-toolchain`;
-* the fixture table below must list exactly the fixtures `scripts/regression_fixtures.py`
-  declares.
+1. **Four published transcripts, located as exactly one fenced block each, inside the section
+   named for it.**
+   * `./scripts/check_axioms.sh` — equal, character for character, to what the gate prints now.
+   * `python3 scripts/gen_proof_sha256.py --check` — likewise.
+   * the regression-fixture table — equal to what `scripts/regression_fixtures.py
+     --expected-table` renders.
+   * `lake clean && time lake build` — checked for the part of it that is reproducible: the set
+     of modules built and the job count lake reports. **Its timings are not checked** and are not
+     checkable; they differ between machines and between runs on one machine, and are labelled
+     illustrative where they appear.
+   "Exactly one block" is part of the check: a second, stale copy of any of these elsewhere in the
+   document is a failure, not something a substring search would have missed.
+2. **Counts, in every place each appears**: constants scanned by the audit, named
+   `theorem`/`lemma` declarations and the number of files they live in, files in the hash
+   manifest, fixture runs and failure modes, and the lake job count.
+3. **The toolchain pin**: the tag `leanprover/lean4:v…` wherever these documents spell it out, the
+   release commit, the version inside the recorded `lean --version` line, and **all four**
+   platform archive digests offered by `reports/TOOLCHAIN.md` — not only the one CI installs,
+   whose value must additionally equal `.github/workflows/ci.yml`'s.
+4. **The fixture roster**: the table below must list exactly the fixtures
+   `scripts/regression_fixtures.py` declares, in order.
 
 A claim whose pattern that script can no longer find is a failure there, not a silent skip, so
 rewording a checked sentence out of the checker's reach fails CI rather than escaping it.
 
-**Everything else in these documents is maintained by hand and is not machine-checked**: the
-mathematical account, the I-D and RFC section references, the lemma tables, the boundary text, the
-build timings and the `12 jobs` figure (illustrative and machine-dependent by construction), and
-every argument made in prose anywhere. If a sentence here is wrong about the mathematics, no step
-of CI will say so. What CI can say is that the numbers and the transcripts are not stale, and it
-now does.
+**Everything not in that list is maintained by hand and is not machine-checked.** Concretely, and
+not as a hedge: the mathematical account and every argument made in prose; the I-D and RFC section
+references; the lemma tables; the boundary text; the build timings; the host triple and local
+`lake` path recorded at the top of `reports/TOOLCHAIN.md`, which are a record of one past run on
+one machine and cannot be re-derived here; and the correctness of any English sentence about any
+of it. If a sentence here is wrong about the mathematics, no step of CI will say so. What CI can
+say is that the numbers, the pins and the transcripts are not stale, and it now does.
 
 ### What the four checks are for
 
@@ -71,13 +86,15 @@ Together they protect against **accidental incompleteness**, which is the realis
 a file added and not imported, a proof left unfinished, a build setting relaxed for one
 declaration, a kernel check skipped, a hash manifest that fell out of sync. Each of those is a way
 for a green CI run to mean less than it appears to, and each now fails with a named reason. And
-they give a reader something reproducible: a clean clone, three commands, the same verdict.
+they give a reader something reproducible: a clean clone, one toolchain install and the five
+commands listed under "Reproduce" below, and the same verdict.
 
 **What they do not protect against, stated just as plainly.** They do not defend against a
 participant with write access who changes the checks. `scripts/Audit.lean`,
 `scripts/check_imports.py`, `scripts/check_source_policy.py`, `scripts/regression_fixtures.py`,
-`scripts/gen_proof_sha256.py` and `.github/workflows/ci.yml` live in this repository and are edited by the same people, in the same
-commits, as the proofs they check. `reports/PROOF.sha256` hashes all of them, but it is
+`scripts/gen_proof_sha256.py`, `scripts/check_doc_claims.py` and `.github/workflows/ci.yml` live in
+this repository and are edited by the same people, in the same commits, as the proofs they
+check. `reports/PROOF.sha256` hashes all of them, but it is
 regenerated by that same process, so it detects drift *within* a change and not the change
 itself. There is no external anchor, no signature over the sources, no attestation from outside
 this repository. A reader relying on this evidence is relying on the published CI log for a named
@@ -93,6 +110,18 @@ against an edit that changes the roster too: `DECLARED_RUNS` sits in the same fi
 costs is three places in one commit, because `scripts/check_doc_claims.py` compares the roster
 against the fixture table published in this document. Three agreeing edits is a higher bar than
 one, and it is not a guarantee; naming the bar is the honest thing to do with it.
+
+**The document checker has the same shape of weakness, and less protection.**
+`scripts/check_doc_claims.py` refuses to run with an empty claim list, and every claim it holds
+must match at least one place in the documents — so a checked sentence cannot be quietly reworded
+out of its reach. But **the list of claims is maintained by hand**: deleting one entry from a
+non-empty list is a green run, exactly as deleting one fixture from the roster would be if the
+roster were not declared separately. There is no equivalent of `DECLARED_RUNS` here, because the
+set of interesting sentences in a prose document is not something this repository can enumerate
+from anything but itself. So the exhaustive list under "What is checked about this document" is a
+statement of intent kept in sync by review, not by machine. Read it as: these are the claims CI
+will catch drifting; a claim removed from that script stops being caught, and only the diff would
+show it.
 
 That is the honest shape of the guarantee: strong against forgetting, weak against intent.
 
@@ -295,10 +324,22 @@ a library that just finished building — the two conditions cannot both hold.
 
 ### Required regression tests
 
-**7 fixture runs covering 6 failure modes** — six ways for this pipeline to be wrong, one of them
-exercised twice with a different set of layers active (see 6 and 6b below). Each run must make the
-pipeline exit nonzero **and must be caught by the layer responsible for it** — a fixture that
-failed for some unrelated reason would satisfy "exits nonzero" and prove nothing.
+**11 fixture runs covering 7 failure modes** — seven ways for this pipeline to be wrong; mode 6 is
+exercised twice with a different set of layers active (6 and 6b), and mode 7 once per forbidden
+lexeme (7a–7d), because a policy rule that no fixture exercises can be deleted without turning
+anything red. Each run must make the pipeline exit nonzero **and must be caught by the layer
+responsible for it** — a fixture that failed for some unrelated reason would satisfy "exits
+nonzero" and prove nothing.
+
+**The gate is a stage, not an assumption.** Every other stage runs a check directly, but the thing
+these documents call the pipeline is the shell script that wraps them. A wrapper that stopped
+propagating an exit status — a dropped `$?`, a stray `|| true`, a reordered branch — would leave
+every individual stage reporting exactly what it reports today while CI went green on a corrupted
+tree, and CI alone would never notice, because it only ever runs the gate on a healthy tree. So
+each fixture also runs `./scripts/check_axioms.sh` on its corrupted copy and requires both a
+nonzero status and the diagnostic naming the failing layer. Fixture 6b is the one that requires
+the gate to *pass*: only the hash manifest is stale there, and the manifest is CI's own step
+rather than part of the gate.
 
 **This is a test, not a report of one.** `scripts/regression_fixtures.py` applies every fixture
 and asserts the exact exit status of every stage (`lake build`, import invariant, source policy,
@@ -339,31 +380,40 @@ The table below is the runner's own output on the tree this document describes (
 exited 0, `1` = exited nonzero, `-` = not run):
 
 ```
- fixture     layer     build   imports    policy     audit  manifest
-       1   imports         0         1         0         0         0   ok
-       2    policy         0         0         1         0         0   ok
-       3    policy         0         0         1         0         0   ok
-       4     build         1         0         1         -         0   ok
-       5     audit         0         0         0         1         0   ok
-       6  manifest         0         1         0         0         1   ok
-      6b  manifest         0         0         0         0         1   ok
+ fixture     layer     build   imports    policy     audit      gate  manifest
+       1   imports         0         1         0         0         1         0   ok
+       2    policy         0         0         1         0         1         0   ok
+       3    policy         0         0         1         0         1         0   ok
+       4     build         1         0         1         -         1         0   ok
+       5     audit         0         0         0         1         1         0   ok
+       6  manifest         0         1         0         0         1         1   ok
+      6b  manifest         0         0         0         0         0         1   ok
+      7a    policy         0         0         1         0         1         0   ok
+      7b    policy         0         0         1         0         1         0   ok
+      7c    policy         0         0         1         0         1         0   ok
+      7d    policy         0         0         1         0         1         0   ok
 
-all 7 fixture run(s) covering 6 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
+all 11 fixture run(s) covering 7 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
 ```
 
 | # | Fragment | Layer under test | Why that layer, and why not another |
 |---|---|---|---|
 | 1 | `AhlProofs/Extra.lean`, containing `axiom planted_bad : False`, never added to `AhlProofs.lean` | import invariant | The build and the environment audit are blind here by construction: an unimported file is never compiled, so no constant of it exists to audit. This is the ordinary case of forgetting an `import` line, and it produces a repository whose green CI says nothing at all about that file. |
-| 2 | `set_option warningAsError false in` / `example : False := <placeholder>` | source policy | Two forbidden lexemes at once. The environment audit cannot see this: an `example` is elaborated and discarded, never stored in `env.constants`, and the local `set_option` removes the build failure Lean's own warning would otherwise cause. |
+| 2 | `set_option warningAsError false in` / `example : False := <placeholder>` | source policy | The environment audit cannot see this: an `example` is elaborated and discarded, never stored in `env.constants`, and the local `set_option` removes the build failure Lean's own warning would otherwise cause. |
 | 3 | `set_option debug.skipKernelTC true in` + a `run_tac` proof assigning `True.intro` to a goal of `False` | source policy | Lean 4.31.0 accepts this with exit 0 and a **clean** axiom closure — no placeholder axiom, no axiom of our own — because the kernel never re-checked the term. No walk over `env.constants` can detect it; only refusing the lexeme can. |
 | 4 | `theorem probe_incomplete : True := by <placeholder>` | `lake build` | `declaration uses 'sorry'` is a warning promoted to an error by `lakefile.toml`. The source policy also rejects the lexeme (the runner asserts both), and the environment audit would have found `sorryAx` in the constant's closure had the build been allowed to finish — hence `-` for the audit stage: with no `.olean`s, its exit status would say nothing about the audit. |
 | 5 | `axiom probe_axiom : False` | environment audit | Both of the audit's own-axiom findings fire: `own axiom declaration(s), not part of Lean's trusted kernel` and `axiom closure is not a subset of the allowed set`. Declaring an axiom is not a Lean warning, so the build is untroubled by it. |
 | 6 | A new `.lean` file under `AhlProofs/`, manifest left stale | hash manifest | In this plain form the import invariant fires too; the runner still requires the *manifest* check to fail, so the fixture cannot pass on the strength of another layer. |
-| 6b | The same file, with its `import` line added | hash manifest | The import invariant now passes, leaving the manifest check as the only thing between the tree and a green run. This is what establishes that the two layers are independent rather than one masking the other — the claim is machine-checked here rather than asserted in prose. |
+| 6b | The same file, with its `import` line added | hash manifest | The import invariant now passes, leaving the manifest check as the only thing between the tree and a green run. This is what establishes that the two layers are independent rather than one masking the other, and it is the one run where `./scripts/check_axioms.sh` is required to *succeed*. |
+| 7a | `-- sorry` in a Lean line comment | source policy | One run per forbidden lexeme, each asserting that lexeme's own finding message. A comment reaches no elaborator, so the build still succeeds and the audit still finds nothing: the policy is the only thing that can fail, which is what isolates the rule. It also exercises the property the policy claims — that the ban is total, comments included. |
+| 7b | `-- admit` in a Lean line comment | source policy | The rule that had no fixture at all until this one. Deleting the `admit` pattern from `scripts/check_source_policy.py` used to leave the whole suite green; it now fails this run. |
+| 7c | `-- warningAsError false` in a Lean line comment | source policy | Fixture 2 exercises this lexeme in its natural setting; this run pins the rule itself, independent of whether an `example` or a `set_option` happens to be involved. |
+| 7d | `-- debug.skipKernelTC` in a Lean line comment | source policy | Same, for the kernel-typecheck escape: the rule is tested apart from the elaborate proof that motivates it. |
 
-For fixtures 1 through 5 the runner regenerates the manifest inside the copy after applying the
-fixture, so manifest staleness cannot be what fails and the named layer is demonstrably the one
-doing the work. Fixtures 6 and 6b leave it stale, because there staleness is the subject.
+For every fixture except 6 and 6b the runner regenerates the manifest inside the copy after
+applying the fixture, so manifest staleness cannot be what fails and the named layer is
+demonstrably the one doing the work. Fixtures 6 and 6b leave it stale, because there staleness is
+the subject.
 
 Fixtures 1 through 3 previously passed the whole pipeline with exit 0; `scripts/check_imports.py`
 and `scripts/check_source_policy.py` are what closed them.
@@ -516,6 +566,11 @@ excluding it would let a change that quietly deleted the audit step pass unnotic
 
 ## Reproduce
 
+**One prerequisite and five commands.** The prerequisite is the toolchain: install it first, from
+the checksummed release archive, following `reports/TOOLCHAIN.md`'s "Install" section in full —
+the script *and* the `export` *and* the two guards after it, which together fail the same way the
+`lean` job of `.github/workflows/ci.yml` fails. Then, from a clean clone:
+
 ```sh
 git clone https://github.com/evidentum-io/ahl-proofs.git
 cd ahl-proofs
@@ -526,13 +581,12 @@ python3 scripts/regression_fixtures.py
 python3 scripts/check_doc_claims.py
 ```
 
-`scripts/regression_fixtures.py` is the slowest of these — it builds the library once per
-fixture, in a throwaway copy — and it is the one that checks the checks; running it last, after
-the gate, works equally well, since it does not touch the working tree either way.
+`scripts/regression_fixtures.py` is much the slowest of the five — it builds the library once per
+fixture run, in a throwaway copy — and it is the one that checks the checks; running it last,
+after the gate, works equally well, since it does not touch the working tree either way.
+`scripts/check_doc_claims.py` rebuilds once more, to check the published build transcript, and so
+leaves a fresh build behind it.
 
-Install the toolchain first, from the checksummed release archive — `reports/TOOLCHAIN.md`'s
-"Install" section is the same pinned URL, the same SHA-256 comparison and the same version check
-that `.github/workflows/ci.yml` performs, so a local run and a CI run establish the same thing
-about the toolchain. `.github/workflows/ci.yml` is the authority on the exact commands CI runs,
-on every push (any branch) and every pull request; read it alongside "Trust boundary" above,
-which says what a passing run of all of this does and does not mean.
+`.github/workflows/ci.yml` is the authority on the exact commands CI runs, on every push (any
+branch) and every pull request; read it alongside "Trust boundary" above, which says what a
+passing run of all of this does and does not mean.
