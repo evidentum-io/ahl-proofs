@@ -51,6 +51,7 @@ import argparse
 import difflib
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -114,6 +115,12 @@ DECLARED_CLAIM_LABELS = frozenset({
 INSTALL_HEADING = "## Install — the same procedure a human runs and CI runs"
 WORKFLOW = ".github/workflows/ci.yml"
 WORKFLOW_JOB = "lean"
+
+
+# The only fields a step of this workflow may declare. See `parse_workflow_steps` for why the
+# list is this short.
+STEP_SCHEMA_KEYS = frozenset({"name", "run", "uses"})
+USES_PIN_RE = re.compile(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}")
 
 
 class WorkflowParseError(Exception):
@@ -230,6 +237,8 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
 
     names: list[str] = []
     runs: list[str] = []
+    uses: list[str] = []
+    keys: list[set[str]] = []
     item_indent = None
     i += 1
     while i < n:
@@ -254,6 +263,8 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
                 )
             names.append(None)                       # placeholder for this step
             runs.append("")
+            uses.append("")
+            keys.append(set())
             stripped = stripped[2:].strip()
             key_indent = ind + 2
         elif item_indent is not None and ind == item_indent + 2:
@@ -274,6 +285,8 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
                 f"line {i + 1}: YAML merge key or anchor/alias inside `steps:` ({stripped!r}); "
                 "this reader resolves neither and will not guess"
             )
+        if names:
+            keys[-1].add(key)
         if value in ("|", ">", "|-", ">-", "|+", ">+") or value == "":
             # A block scalar, or a nested mapping/sequence (`with:`, `env:`). Either way its
             # contents are not this step's own fields. A `run:` block scalar is captured (its
@@ -299,6 +312,10 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
             if not names:
                 raise WorkflowParseError(f"line {i + 1}: `run:` outside any step")
             runs[-1] = value
+        elif key == "uses":
+            if not names:
+                raise WorkflowParseError(f"line {i + 1}: `uses:` outside any step")
+            uses[-1] = value
         i += 1
 
     if not names:
@@ -306,7 +323,42 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
     unnamed = [k + 1 for k, v in enumerate(names) if v is None]
     if unnamed:
         raise WorkflowParseError(f"step(s) {unnamed} have no `name:`")
-    return [{"name": nm, "run": rn} for nm, rn in zip(names, runs)]
+
+    # Strict schema. A step is `name` plus exactly one of `run` or a SHA-pinned `uses`, and
+    # nothing else.
+    #
+    # This is the check that was missing, and its absence was the worst hole in the whole
+    # construction: `if: false` on the regression-fixtures step, with the manifest regenerated as
+    # any author would, produced a green run that never executed a single fixture. The label check
+    # saw the step in place, the command comparison saw the same commands, and that the step would
+    # not run was visible to nothing. `continue-on-error: true` does the same for the gate.
+    # Rather than enumerate the fields that disable a step — a list that GitHub can extend without
+    # telling us — the schema admits only the two fields this workflow uses and refuses everything
+    # else, including fields that are perfectly ordinary elsewhere (`env`, `shell`,
+    # `working-directory`, `id`, `with`, `timeout-minutes`). Adding one is then a deliberate act
+    # that must come with a check for what it means.
+    for idx, (name, seen) in enumerate(zip(names, keys), start=1):
+        extra = seen - STEP_SCHEMA_KEYS
+        if extra:
+            raise WorkflowParseError(
+                f"step {idx} ({name!r}) declares {sorted(extra)}, which this workflow's schema "
+                f"does not admit. Allowed: {sorted(STEP_SCHEMA_KEYS)}. A field outside the schema "
+                "may change whether or how the step runs — `if:` and `continue-on-error:` do "
+                "exactly that — so it is refused until this checker knows what to make of it."
+            )
+        has_run, has_uses = "run" in seen, "uses" in seen
+        if has_run == has_uses:
+            raise WorkflowParseError(
+                f"step {idx} ({name!r}) must have exactly one of `run:` or `uses:`, has "
+                f"{'both' if has_run else 'neither'}"
+            )
+    for idx, (name, ref) in enumerate(zip(names, uses), start=1):
+        if ref and not USES_PIN_RE.fullmatch(ref):
+            raise WorkflowParseError(
+                f"step {idx} ({name!r}) uses {ref!r}, which is not pinned by a 40-character "
+                "commit SHA; a mutable tag can be repointed by the action's publisher"
+            )
+    return [{"name": nm, "run": rn, "uses": us} for nm, rn, us in zip(names, runs, uses)]
 
 
 def workflow_steps(root: pathlib.Path) -> list[dict]:
@@ -373,7 +425,7 @@ SHELL_KEYWORDS = frozenset({
 # against hypothetical future need. Adding a command here is a deliberate, reviewable act.
 IGNORED_COMMANDS = frozenset({
     # shell builtins that change no file and run nothing from this repository
-    "set", "echo", "cd", "export", "exit", "trap", "command",
+    "set", "echo", "cd", "export", "exit", "[",
     # file and path utilities whose presence cannot change what a step verifies
     "mkdir", "rm", "mv", "dirname", "mktemp", "tr",
     # an inert query about the host
@@ -416,31 +468,96 @@ _CASE_OPEN = re.compile(r"^case\b.*\bin$")
 _CASE_PATTERN = re.compile(r"^[^;]*\)\s*(?:;;)?$")
 
 
-def _command_positions(line: str) -> list[str]:
-    """Split a shell line into the pieces that begin at a command position.
+SUBSTITUTION_PLACEHOLDER = "SUBST"
 
-    Quote-aware, because a naive split produced segments starting mid-string: `|` and `(` inside a
-    quoted message are text, not separators. A `$(…)` or backtick substitution *is* a command
-    position, and its body is scanned with the surrounding quoting suspended; what follows the
-    closing `)` continues the word it was part of and is **not** a command position, which is why
-    the pieces carry that flag rather than all being treated alike.
+
+def _extract_substitutions(line: str) -> tuple[str, list[str], list[str]]:
+    """Replace each `$( … )` / backtick substitution with a placeholder word.
+
+    Returns (line with placeholders, substitution bodies, problems). Cutting the line at `$(`
+    instead — which is what an earlier version did — left the outer piece with an unbalanced
+    quote, since the closing `"` sits after the substitution: `mkdir -p "$(dirname X)"` became
+    `mkdir -p "`. A placeholder keeps both halves quotable, and the body is returned to be scanned
+    in its own right, because a substitution is a command position.
     """
-    pieces: list[str] = []
-    cur: list[str] = []
-    is_cmd = True
-    stack: list[bool] = []
-    sq = dq = False
+    out: list[str] = []
+    bodies: list[str] = []
+    problems: list[str] = []
     i, n = 0, len(line)
-
-    def flush(next_is_cmd: bool) -> None:
-        nonlocal cur, is_cmd
-        if is_cmd:
-            pieces.append("".join(cur))
-        cur = []
-        is_cmd = next_is_cmd
-
+    sq = dq = False
     while i < n:
         c = line[i]
+        if sq:
+            out.append(c)
+            sq = c != "'"
+            i += 1
+            continue
+        if c == "'" and not dq:
+            sq = True
+            out.append(c)
+            i += 1
+            continue
+        if c == '"':
+            dq = not dq
+            out.append(c)
+            i += 1
+            continue
+        opener = "$(" if line.startswith("$(", i) else ("`" if c == "`" else None)
+        if opener is None:
+            out.append(c)
+            i += 1
+            continue
+        j = i + len(opener)
+        depth = 1
+        b_sq = b_dq = False
+        while j < n:
+            d = line[j]
+            if b_sq:
+                b_sq = d != "'"
+            elif d == "'" and not b_dq:
+                b_sq = True
+            elif d == '"':
+                b_dq = not b_dq
+            elif not b_dq:
+                if opener == "$(" and line.startswith("$(", j):
+                    depth += 1
+                    j += 1
+                elif opener == "$(" and d == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                elif opener == "`" and d == "`":
+                    depth = 0
+                    break
+            j += 1
+        if j >= n:
+            problems.append(f"unterminated command substitution in {line.strip()!r}")
+            out.append(c)
+            i += 1
+            continue
+        bodies.append(line[i + len(opener):j])
+        out.append(SUBSTITUTION_PLACEHOLDER)
+        i = j + 1
+    if sq or dq:
+        problems.append(f"unbalanced quote in {line.strip()!r}")
+    return "".join(out), bodies, problems
+
+
+def _command_positions(line: str) -> tuple[list[str], list[str]]:
+    """Split a shell line into the pieces that begin at a command position.
+
+    Substitutions are lifted out first (see above) and returned as pieces of their own, since a
+    substitution body runs. What remains is split on `;`, `|`, `&`, `&&`, `||` and `(` outside
+    quotes; a redirection such as `2>&1` is text, not a separator; a trailing `#` comment ends the
+    line.
+    """
+    flat, bodies, problems = _extract_substitutions(line)
+    pieces: list[str] = []
+    cur: list[str] = []
+    sq = dq = False
+    i, n = 0, len(flat)
+    while i < n:
+        c = flat[i]
         if sq:
             cur.append(c)
             sq = c != "'"
@@ -456,63 +573,134 @@ def _command_positions(line: str) -> list[str]:
             cur.append(c)
             i += 1
             continue
-        if line.startswith("$(", i):
-            flush(True)
-            stack.append(dq)
-            dq = False
-            i += 2
-            continue
-        if c == "`":
-            flush(True)
-            stack.append(dq)
-            dq = False
-            i += 1
-            continue
-        if c == ")" and stack and not dq:
-            flush(False)
-            dq = stack.pop()
-            i += 1
-            continue
         if not dq:
             if c == "#" and (not cur or cur[-1].isspace()):
-                break                      # a trailing comment ends the line
-            if line.startswith("&&", i) or line.startswith("||", i):
-                flush(True)
-                i += 2
-                continue
-            if c == "&" and ((cur and cur[-1] == ">") or line.startswith("&>", i)):
-                cur.append(c)          # `2>&1`, `&>file`: redirection, not a separator
+                break
+            if c == "&" and ((cur and cur[-1] == ">") or flat.startswith("&>", i)):
+                cur.append(c)
                 i += 1
                 continue
+            if flat.startswith("&&", i) or flat.startswith("||", i):
+                pieces.append("".join(cur))
+                cur = []
+                i += 2
+                continue
             if c in "|;&(":
-                flush(True)
+                pieces.append("".join(cur))
+                cur = []
                 i += 1
                 continue
             if c == ")":
-                flush(False)
+                pieces.append("".join(cur))
+                cur = []
                 i += 1
                 continue
         cur.append(c)
         i += 1
-    flush(True)
-    return pieces
+    pieces.append("".join(cur))
+    for body in bodies:
+        sub_pieces, sub_problems = _command_positions(body)
+        pieces += sub_pieces
+        problems += sub_problems
+    return pieces, problems
 
 
+# Constructs this recogniser does not read. Finding one is an **error**, not an empty result.
+#
+# That inversion is the point of this round. The scanner used to return nothing for a line it did
+# not understand, which meant `CI_X=1 node evil.js`, `command node evil.js`,
+# `trap 'node evil.js' EXIT` and `if node evil.js; then` were each compared as no commands at all
+# — unknown treated as safe. The four forms are handled below; everything still unhandled now
+# fails loudly, so the set of shell this comparison covers is a fact about the code rather than a
+# hope. These scripts are ours and are about a hundred lines; when one needs a construct from this
+# list, the honest move is to add support for it deliberately, not to let it pass unread.
+UNSUPPORTED_MARKERS = (
+    ("<<", "here-document"),
+    ("<(", "process substitution"),
+    (">(", "process substitution"),
+    ("$((", "arithmetic substitution"),
+    (";&", "case fallthrough"),
+    ("${!", "indirect parameter expansion"),
+)
 
-def command_scan(text: str) -> tuple[set[str], set[str]]:
-    """Return (commands compared, ignored commands actually seen).
+# Keywords whose remainder is itself a command and must be scanned, not skipped.
+RECURSING_KEYWORDS = frozenset({"if", "elif", "while", "until", "!"})
+
+
+def _scan_words(words: list[str], compared: set[str], ignored_seen: set[str],
+                unsupported: set[str], depth: int = 0) -> None:
+    """Classify one command position, following the constructs listed in the module docstring."""
+    if depth > 4:
+        unsupported.add("command nesting deeper than this recogniser follows")
+        return
+    while words and words[0] in COMMAND_PREFIXES:
+        words = words[1:]
+    while words and _ASSIGNMENT.match(words[0]):
+        words = words[1:]          # `NAME=value cmd …` — the command is what follows
+    if not words:
+        return
+    head = words[0]
+    if head.endswith(")"):
+        return                     # a `case` pattern
+    if head in RECURSING_KEYWORDS:
+        _scan_words(words[1:], compared, ignored_seen, unsupported, depth + 1)
+        return
+    if head in SHELL_KEYWORDS:
+        return
+    if head.startswith(("$", "`", "{")):
+        unsupported.add(f"indirect or grouped command {head!r}")
+        return
+    if head == "trap":
+        # The payload is shell, and it runs. `trap 'node evil.js' EXIT` used to scan as nothing.
+        payload_pieces, payload_problems = _command_positions(
+            words[1] if len(words) > 1 else "")
+        unsupported.update(payload_problems)
+        for piece in payload_pieces:
+            _scan_piece(piece, compared, ignored_seen, unsupported, depth + 1)
+        return
+    if head in ("command", "env"):
+        rest = words[1:]
+        if head == "command" and rest and rest[0] in ("-v", "-V", "-p"):
+            return                 # a lookup: resolves a name, runs nothing
+        _scan_words(rest, compared, ignored_seen, unsupported, depth + 1)
+        return
+    if head in IGNORED_COMMANDS:
+        ignored_seen.add(head)
+        return
+    joined = " ".join(words)
+    for pattern, replacement in COMMAND_NORMALISATIONS:
+        if pattern.search(joined):
+            compared.add(replacement)
+            return
+    arg = words[1] if len(words) > 1 else ""
+    if _FLAG.match(arg) or _SCRIPT_PATH.match(arg) or _BARE_WORD.match(arg):
+        compared.add(f"{head} {arg}")
+    else:
+        compared.add(head)
+
+
+def _scan_piece(piece: str, compared: set[str], ignored_seen: set[str],
+                unsupported: set[str], depth: int = 0) -> None:
+    try:
+        words = shlex.split(piece, posix=True)
+    except ValueError as e:
+        unsupported.add(f"unparsable shell ({e}): {piece.strip()!r}")
+        return
+    _scan_words(words, compared, ignored_seen, unsupported, depth)
+
+
+def command_scan(text: str) -> tuple[set[str], set[str], set[str]]:
+    """Return (commands compared, ignored commands seen, unsupported constructs found).
 
     Command position means: the start of a line, or immediately after `|`, `;`, `&`, `(`, `$(` or
-    a backtick, optionally behind one of COMMAND_PREFIXES. Full-line comments are dropped first;
-    `case` patterns are recognised and skipped as syntax, and a leading `NAME=value` is an
-    assignment rather than a command.
+    a backtick, optionally behind one of COMMAND_PREFIXES and any number of `NAME=value`
+    assignments. Full-line and trailing comments are dropped, backslash continuations joined, and
+    `case` patterns recognised as syntax.
     """
     compared: set[str] = set()
     ignored_seen: set[str] = set()
+    unsupported: set[str] = set()
     in_case = False
-    # A command split across lines with a trailing backslash is one command; without joining, the
-    # continuation line looks like a fresh command position and its first word — a URL, say — is
-    # read as a command name.
     joined_lines: list[str] = []
     for raw in text.splitlines():
         if joined_lines and joined_lines[-1].endswith("\\"):
@@ -523,39 +711,20 @@ def command_scan(text: str) -> tuple[set[str], set[str]]:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
+        for marker, what in UNSUPPORTED_MARKERS:
+            if marker in line:
+                unsupported.add(f"{what} in {line!r}")
         if _CASE_OPEN.match(line):
             in_case = True
         elif line == "esac":
             in_case = False
         if in_case and _CASE_PATTERN.match(line) and not line.startswith("case"):
             continue
-        for piece in _command_positions(line):
-            words = piece.split()
-            while words and words[0] in COMMAND_PREFIXES:
-                words = words[1:]
-            if not words:
-                continue
-            head = words[0]
-            if head in SHELL_KEYWORDS or _ASSIGNMENT.match(head) or head.endswith(")"):
-                continue
-            if head in IGNORED_COMMANDS:
-                ignored_seen.add(head)
-                continue
-            joined = " ".join(words)
-            normalised = None
-            for pattern, replacement in COMMAND_NORMALISATIONS:
-                if pattern.search(joined):
-                    normalised = replacement
-                    break
-            if normalised is not None:
-                compared.add(normalised)
-                continue
-            arg = words[1] if len(words) > 1 else ""
-            if _FLAG.match(arg) or _SCRIPT_PATH.match(arg) or _BARE_WORD.match(arg):
-                compared.add(f"{head} {arg}")
-            else:
-                compared.add(head)
-    return compared, ignored_seen
+        pieces, piece_problems = _command_positions(line)
+        unsupported.update(piece_problems)
+        for piece in pieces:
+            _scan_piece(piece, compared, ignored_seen, unsupported)
+    return compared, ignored_seen, unsupported
 
 
 def commands_in(text: str) -> list[str]:
@@ -695,12 +864,22 @@ def check_install_script_labels(script: str, ci_steps: list[dict], problems: lis
     # vocabulary that recognises nothing but an ignore list that swallows everything.
     all_ci_commands: set[str] = set()
     all_ignored_seen: set[str] = set()
+    all_unsupported: set[str] = set()
     for s in ci_steps:
-        seen_cmds, seen_ignored = command_scan(s["run"])
+        seen_cmds, seen_ignored, seen_unsupported = command_scan(s["run"])
         all_ci_commands |= seen_cmds
         all_ignored_seen |= seen_ignored
-    script_cmds, script_ignored = command_scan(script)
+        all_unsupported |= {f"{WORKFLOW} step {s['name']!r}: {u}" for u in seen_unsupported}
+    script_cmds, script_ignored, script_unsupported = command_scan(script)
     all_ignored_seen |= script_ignored
+    all_unsupported |= {f"the published install script: {u}" for u in script_unsupported}
+
+    if all_unsupported:
+        problems.append(
+            "shell this comparison does not read, which must be an error rather than an empty "
+            "result — an unread line contributes no commands and would compare as equal:\n      "
+            + "\n      ".join(sorted(all_unsupported))
+        )
 
     if not IGNORED_COMMANDS:
         problems.append("IGNORED_COMMANDS is empty — a declared list that names nothing")

@@ -28,7 +28,7 @@ document" below. The four:
   declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
   because nothing was checked. It is a layer on top of the environment audit and never a
   substitute for it.
-* **The regression fixtures** — `scripts/regression_fixtures.py`. 24 fixture runs covering 14
+* **The regression fixtures** — `scripts/regression_fixtures.py`. 31 fixture runs covering 15
   failure modes of this repository, each applied to a throwaway copy of it, each required to fail
   *and* to fail at the layer that owns it, *and* to fail `./scripts/check_axioms.sh` itself with
   the diagnostic that names that layer. This is what keeps the other three honest: a layer that stopped working
@@ -157,9 +157,15 @@ if something is not on it, it is not machine-checked, whatever else these docume
    * **The commands in each labelled block match the workflow step it mirrors.** For every label,
      the set of commands in the block under it must equal the set in the workflow steps it covers.
      **Every** command in command position is compared; only what `IGNORED_COMMANDS` declares
-     indifferent is dropped, and that list is short, named one by one, kept pruned to what
-     actually occurs (the checker reports entries that never fire), and forbidden from naming
-     anything in `NEVER_IGNORABLE` — the interpreters, fetchers and build tools through which code
+     indifferent is dropped, **and shell this recogniser does not read is an error rather than an
+     empty result** — the inversion that matters most here, since an unread line contributes no
+     commands and so compares as equal. `CI_X=1 node …`, `command node …`, `trap 'node …' EXIT`
+     and `if node …; then` each used to scan as no commands at all; prefix assignments are now
+     consumed, `command`/`env` arguments read as the commands they name, `if`/`while`/`until`
+     conditions and `trap` payloads recursed into, and here-documents, process substitutions,
+     arithmetic expansion, indirect commands and unbalanced quotes are refused by name. The
+     ignore list is short, named one by one, kept pruned to what actually occurs (the checker
+     reports entries that never fire), and forbidden from naming anything in `NEVER_IGNORABLE` — the interpreters, fetchers and build tools through which code
      and network reach actually enter a step. That last guard is a **denylist and not complete**:
      an interpreter nobody listed could still be declared indifferent. It replaced an earlier
      guard that required the ignore list to be disjoint from the compared set, which could never
@@ -171,6 +177,15 @@ if something is not on it, it is not machine-checked, whatever else these docume
      different data are equal here. What it does establish is that no command appears on one side
      and not the other — which is how `lake --version`, present in CI's self-report step and
      missing from the published script, was found.
+   * **Every workflow step fits a strict schema.** A step is `name` plus exactly one of `run:` or
+     a `uses:` pinned to a 40-character commit SHA — and nothing else. Not a list of dangerous
+     fields but a list of admitted ones, so `if:`, `continue-on-error:`, `shell:`,
+     `working-directory:`, `env:`, `with:` and anything GitHub adds later are all refused until
+     someone decides what this checker should make of them. This is here because its absence was
+     the largest hole found in twelve rounds: `if: false` on the regression-fixtures step, with
+     the manifest regenerated as any author would regenerate it, produced a green CI run that
+     never executed a single fixture — the label check saw the step, the command comparison saw
+     the same commands, and nothing saw that the step would not run.
    * **Its `# CI step N [key].` labels match the workflow.** Expanded, the labels must cover
      `.github/workflows/ci.yml`'s steps exactly once each, in order, with each label's key
      occurring in that step's `name`. A step added to, removed from or reordered within the
@@ -483,12 +498,15 @@ a library that just finished building — the two conditions cannot both hold.
 
 ### Required regression tests
 
-**24 fixture runs covering 14 failure modes** — fourteen ways for this pipeline to be wrong; mode
-6 is exercised twice with a different set of layers active (6 and 6b), mode 7 once per forbidden
+**31 fixture runs covering 15 failure modes** — fifteen ways for this pipeline to be wrong;
+several modes take more than one run because the same mistake has more than one spelling. Mode 6
+is exercised twice with a different set of layers active (6 and 6b), mode 7 once per forbidden
 lexeme (7a–7d), because a policy rule that no fixture exercises can be deleted without turning
 anything red, mode 9 once per place a Lean file has actually turned up unclassified (9a–9c), mode
-10 once per directory that classification excludes (10a–10c), and mode 12 once per kind of
-executable artifact that is not Lean (12a–12c). Each run must make the pipeline exit nonzero **and must be caught by the layer
+10 once per directory that classification excludes (10a–10c), mode 12 once per kind of executable
+artifact that is not Lean (12a–12c), mode 13 once per shell spelling that used to scan as no
+command at all (13a–13e), and mode 15 once per step field that changes whether a step runs
+(15a–15c). Each run must make the pipeline exit nonzero **and must be caught by the layer
 responsible for it** — a fixture that failed for some unrelated reason would satisfy "exits
 nonzero" and prove nothing.
 
@@ -563,11 +581,18 @@ exited 0, `1` = exited nonzero, `-` = not run):
      12a   imports         0         1         0         0         1         0         -   ok
      12b   imports         0         1         0         0         1         0         -   ok
      12c   imports         0         1         0         0         1         0         -   ok
-      13      docs         0         0         0         0         0         0         1   ok
+     13a      docs         0         0         0         0         0         0         1   ok
+     13b      docs         0         0         0         0         0         0         1   ok
+     13c      docs         0         0         0         0         0         0         1   ok
+     13d      docs         0         0         0         0         0         0         1   ok
+     13e      docs         0         0         0         0         0         0         1   ok
+     15a      docs         0         0         0         0         0         0         1   ok
+     15b      docs         0         0         0         0         0         0         1   ok
+     15c      docs         0         0         0         0         0         0         1   ok
       14   imports         0         1         0         0         1         0         -   ok
       11      docs         0         0         0         0         0         0         1   ok
 
-all 24 fixture run(s) covering 14 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
+all 31 fixture run(s) covering 15 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
 ```
 
 | # | Fragment | Layer under test | Why that layer, and why not another |
@@ -593,7 +618,14 @@ all 24 fixture run(s) covering 14 failure mode(s) behaved as declared: each brok
 | 12a | `tools/helper.py` | covered-artifact coverage | The class again, one file type over. The `.lean` rule said nothing about `.py`, so a Python file outside `scripts/` was hashed by nothing and classified by nobody; a workflow step invoking it would have run unhashed content, and the command-set comparison would have noticed the new *call* while saying nothing about the *callee* being outside the manifest. |
 | 12b | `tools/helper.sh` | covered-artifact coverage | Same, for shell. Both categories now require the file to live under `scripts/` **and** to be present in `reports/PROOF.sha256`, with the manifest asked for its own file list rather than the rule restating it. |
 | 12c | `.github/workflows/extra.yml` | covered-artifact coverage | The sharpest of the three: GitHub Actions runs every file under `.github/workflows/` on its own schedule and permissions, with no step of this repository referring to it. So YAML is declared file by file, not admitted by directory, and each declared file must also be hashed. |
-| 13 | `node /tmp/whatever.js` appended to the `run:` of workflow step 3 | document claims | No new step, so the label check still sees eleven; no new file, so coverage sees nothing; and under the old comparison `node` was a word the vocabulary did not recognise, which made the two command sets equal and the run green. The comparison is inverted now: every command in command position is compared, and only what `IGNORED_COMMANDS` declares indifferent is dropped. |
+| 13a | `node /tmp/whatever.js` appended to the `run:` of workflow step 3 | document claims | No new step, so the label check still sees eleven; no new file, so coverage sees nothing; and under the vocabulary comparison `node` was a word nobody recognised, which made the two command sets equal and the run green. |
+| 13b | the same as `CI_X=1 node …` | document claims | A leading assignment used to swallow the whole line: the scanner saw `CI_X=1` and stopped. Prefix assignments are now consumed and what follows is the command. |
+| 13c | the same as `command node …` | document claims | `command` was declared indifferent, which meant its argument — an arbitrary command — was never looked at. It is now read structurally: `command -v X` is a lookup and runs nothing; anything else is the command it names. |
+| 13d | the same as `trap 'node …' EXIT` | document claims | A `trap` payload is shell, and it runs. It used to be one quoted word to the scanner. |
+| 13e | the same as `if node …; then :; fi` | document claims | The condition of `if`/`while`/`until` is a command. It used to be skipped with the keyword. |
+| 15a | `if: false` on the regression-fixtures step | document claims | The worst hole found in twelve rounds: with the manifest regenerated as any author would, CI went green having never run a fixture. The label check saw the step in place, the command comparison saw the same commands, and that the step would not run was visible to nothing. The step schema now admits `name` plus exactly one of `run` or a SHA-pinned `uses`, and refuses everything else. |
+| 15b | `continue-on-error: true` on the proof gate | document claims | The same, one field over: the gate would run, fail, and not fail the job. |
+| 15c | `shell: bash` on a step | document claims | Harmless in itself, and refused anyway — the schema does not enumerate the dangerous fields, it admits only the two this workflow uses, so a field GitHub adds tomorrow is refused before anyone has to think about what it means. |
 | 14 | `lake-manifest.json` removed from `FIXED_FILES` in `scripts/gen_proof_sha256.py` | covered-artifact coverage | That file carries none of the covered suffixes, so the suffix rule says nothing about it, and the only thing that used to protect it was a list inside the very script an edit would touch — dropping the entry produced a shorter manifest and a green run. `scripts/check_imports.py` now declares the build and pin files separately and requires the two lists to be equal. |
 | 11 | An extra `FreeBSD/x86_64)` branch in the published install script, selecting the Linux archive | document claims | Every required branch and the `*)` default remain, and the set of archives offered is unchanged — which is why the previous version of the platform check passed it. It asked whether the recorded platforms were covered, not whether anything else was, so a platform quietly stopped being refused and started receiving another platform's build. The branch set must now equal the declared one exactly. This is the one fixture whose subject lives in a document rather than in the sources, so it is also the only one that runs `scripts/check_doc_claims.py`. |
 

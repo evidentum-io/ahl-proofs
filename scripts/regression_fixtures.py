@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Machine-checked regression fixtures for the proof gate.
 
-`reports/PROOF.md` claims that 8 ways of breaking this repository each fail the pipeline (in 12
-fixture runs — mode 6 is exercised twice with different layers active, and mode 7 once per
-forbidden lexeme), and
+`reports/PROOF.md` claims that every way of breaking this repository listed in `DECLARED_MODES`
+below fails the pipeline — some modes exercised by more than one run, hence `DECLARED_RUNS` — and
 names the layer that catches each one. Until this script existed, that claim was a report of
 something a person once did by hand — nothing in CI re-established it, so nothing stopped a
 change from quietly removing a layer while the prose went on describing it. This script turns the
@@ -182,6 +181,39 @@ def fixture_8(root: pathlib.Path) -> None:
     nested.mkdir(parents=True, exist_ok=True)
     (nested / "helper.py").write_text("# nested audit helper\n", encoding="utf-8")
     (nested / "helper.sh").write_text("#!/bin/sh\n: nested audit helper\n", encoding="utf-8")
+
+
+def append_to_step(payload: str):
+    """A command appended to the `run:` of a workflow step that already exists.
+
+    One factory, several spellings. Each of these once scanned as *no commands at all*, so the
+    two command sets stayed equal and the run was green: a leading assignment, a `command`
+    prefix, a `trap` payload, and an `if` condition. Unknown shell now fails rather than
+    contributing nothing.
+    """
+    def apply(root: pathlib.Path) -> None:
+        wf = root / ".github" / "workflows" / "ci.yml"
+        t = wf.read_text(encoding="utf-8")
+        anchor = "        run: python3 scripts/check_imports.py\n"
+        assert t.count(anchor) == 1, "the workflow no longer has the step to anchor to"
+        wf.write_text(
+            t.replace(anchor, "        run: |\n"
+                              "          python3 scripts/check_imports.py\n"
+                              f"          {payload}\n"),
+            encoding="utf-8",
+        )
+    return apply
+
+
+def add_step_field(field: str):
+    """A field added to a workflow step that the schema does not admit."""
+    def apply(root: pathlib.Path) -> None:
+        wf = root / ".github" / "workflows" / "ci.yml"
+        t = wf.read_text(encoding="utf-8")
+        anchor = "      - name: Regression fixtures (each must fail, and fail at its own layer)\n"
+        assert t.count(anchor) == 1, "the workflow no longer has the step to anchor to"
+        wf.write_text(t.replace(anchor, anchor + f"        {field}\n"), encoding="utf-8")
+    return apply
 
 
 def extra_command_in_existing_step(root: pathlib.Path) -> None:
@@ -438,17 +470,43 @@ FIXTURES = [
     ]
 ] + [
     {
-        "id": "13",
+        "id": f"13{suffix}",
         "mode": "13",
-        "title": "a command appended to an existing workflow step's run:",
-        "apply": extra_command_in_existing_step,
+        "title": f"`{payload}` appended to an existing workflow step's run:",
+        "apply": append_to_step(payload),
         "regen_manifest": True,
         "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 0,
                    "docs": 1},
         "layer": "docs",
         "reason": ["CI step 3", "node"],
         "gate_reason": "",
-    },
+    }
+    for suffix, payload in [
+        ("a", "node /tmp/whatever.js"),
+        ("b", "CI_X=1 node /tmp/whatever.js"),
+        ("c", "command node /tmp/whatever.js"),
+        ("d", "trap 'node /tmp/whatever.js' EXIT"),
+        ("e", "if node /tmp/whatever.js; then :; fi"),
+    ]
+] + [
+    {
+        "id": f"15{suffix}",
+        "mode": "15",
+        "title": f"`{field}` added to a workflow step",
+        "apply": add_step_field(field),
+        "regen_manifest": True,
+        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 0,
+                   "docs": 1},
+        "layer": "docs",
+        "reason": [needle, "schema does not admit"],
+        "gate_reason": "",
+    }
+    for suffix, field, needle in [
+        ("a", "if: false", "'if'"),
+        ("b", "continue-on-error: true", "'continue-on-error'"),
+        ("c", "shell: bash", "'shell'"),
+    ]
+] + [
     {
         "id": "14",
         "mode": "14",
@@ -505,8 +563,9 @@ STAGES = ["build", "imports", "policy", "audit", "gate", "manifest", "docs"]
 # published in reports/PROOF.md, so the same edit has to be made in three places, in one commit,
 # to go unnoticed. See "Trust boundary" in reports/PROOF.md.
 DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b", "7a", "7b", "7c", "7d", "8",
-                 "9a", "9b", "9c", "10a", "10b", "10c", "12a", "12b", "12c", "13", "14", "11")
-DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14")
+                 "9a", "9b", "9c", "10a", "10b", "10c", "12a", "12b", "12c",
+                 "13a", "13b", "13c", "13d", "13e", "15a", "15b", "15c", "14", "11")
+DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15")
 REQUIRED_KEYS = {
     "id", "mode", "title", "apply", "regen_manifest", "expect", "layer", "reason", "gate_reason",
 }
