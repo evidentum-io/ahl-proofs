@@ -78,14 +78,27 @@ if something is not on it, it is not machine-checked, whatever else these docume
      missing, or has been published twice with one copy stale. It says nothing about whether the
      script installs the right toolchain or runs the right checks, because nothing here executes
      it.
+   * **It selects the recorded archive for every recorded platform.** The script's
+     `# --- platform selection` block is extracted and *executed* against a stubbed `uname`, once
+     per platform: each of the four recorded platforms must yield that platform's archive paired
+     with that platform's recorded digest, a platform with no recorded archive must make the
+     script exit nonzero rather than fall back to one, and the pair chosen for the runner's
+     platform must be the pair `.github/workflows/ci.yml` installs. This is the only part of the
+     install script that is executed here, and it is executed because a constant is exactly what
+     went wrong: the script once hard-wired one platform, so a reader on Linux — the platform CI
+     runs on — would have unpacked a macOS build.
    * **Its `# CI step N [key].` labels match the workflow.** Expanded, the labels must cover
      `.github/workflows/ci.yml`'s steps exactly once each, in order, with each label's key
      occurring in that step's `name`. A step added to, removed from or reordered within the
      workflow while the script stays as it was fails this, with a line-by-line comparison in the
      output. `.github/workflows/ci.yml` is the source of truth and is read structurally rather
-     than by regex over its text — by a small dependency-free reader that refuses anything outside
-     the shape this workflow has, cross-checked against PyYAML wherever that library happens to be
-     installed and never requiring it. *This establishes the order and the identity of the steps,
+     than by regex over its text — by a small dependency-free reader that **rejects** anything
+     outside the shape this workflow has rather than reading it literally: YAML anchors and
+     aliases, merge keys, trailing comments on a `name:`, escaped or flow-style scalars, tabs,
+     document markers, and any nesting inside a step (a `with:` block's own `name:` is not the
+     step's name) all fail the run instead of being guessed at. Where PyYAML happens to be
+     installed its parse is compared against the reader's and a disagreement fails; the library is
+     never required. *This establishes the order and the identity of the steps,
      not that each step's contents are equivalent*: a label can point at the right step while the
      shell under it does something else. That equivalence is not machine-checked, and is not
      claimed to be.

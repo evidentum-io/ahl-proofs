@@ -92,6 +92,7 @@ DECLARED_TRANSCRIPTS = (
 DECLARED_STRUCTURAL_CHECKS = (
     "the published install script is a single block and passes sh -n",
     "the published install script's CI step labels match .github/workflows/ci.yml",
+    "the published install script selects the recorded archive for every recorded platform",
 )
 DECLARED_CLAIM_LABELS = frozenset({
     "constant and theorem counts",
@@ -185,6 +186,46 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[str]:
             return v[1:-1]
         return v
 
+    def check_step_name(value: str, lineno: int) -> str:
+        """Accept only a plain or simply-quoted scalar. Anything a real YAML parser would
+        interpret differently from a literal reading is rejected, never guessed at.
+
+        Each rejection below is a way this reader could have agreed with a label while GitHub
+        Actions ran a step of a different name:
+          * an alias (`*anchor`) or anchor (`&anchor`) reads here as the literal text `*anchor`,
+            while YAML substitutes whatever the anchor holds;
+          * a trailing `#` comment is not part of the value in YAML but is in a literal reading,
+            so `name: real # claimed` would let the key `[claimed]` match a comment;
+          * flow collections, tags and escapes have meanings a literal reading does not carry.
+        """
+        if value.startswith(("*", "&")):
+            raise WorkflowParseError(
+                f"line {lineno}: `name:` is a YAML anchor or alias ({value!r}); this reader will "
+                "not resolve it and must not pretend the literal text is the step's name"
+            )
+        if value.startswith(("{", "[", "!", "?")):
+            raise WorkflowParseError(
+                f"line {lineno}: `name:` uses a YAML form this reader does not read ({value!r})"
+            )
+        if "\t" in value:
+            raise WorkflowParseError(f"line {lineno}: tab in `name:`")
+        if value[:1] in ("'", '"'):
+            quote = value[0]
+            if not value.endswith(quote) or len(value) < 2:
+                raise WorkflowParseError(f"line {lineno}: unterminated quoted `name:` {value!r}")
+            body = value[1:-1]
+            if "\\" in body or quote in body:
+                raise WorkflowParseError(
+                    f"line {lineno}: quoted `name:` uses escaping this reader does not read"
+                )
+            return body
+        if " #" in value or value.startswith("#"):
+            raise WorkflowParseError(
+                f"line {lineno}: `name:` appears to carry a trailing comment ({value!r}); YAML "
+                "would drop it and this reader would not, so the two could disagree"
+            )
+        return value
+
     names: list[str] = []
     item_indent = None
     i += 1
@@ -195,7 +236,12 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[str]:
         ind = indent_of(i)
         if ind <= steps_indent:
             break                                    # the sequence ended
-        stripped = lines[i].strip()
+        raw = lines[i]
+        if "\t" in raw:
+            raise WorkflowParseError(f"line {i + 1}: tab in a line inside `steps:`")
+        stripped = raw.strip()
+        if stripped in ("---", "..."):
+            raise WorkflowParseError(f"line {i + 1}: document marker inside `steps:`")
         if stripped.startswith("- "):
             if item_indent is None:
                 item_indent = ind
@@ -206,24 +252,37 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[str]:
             names.append(None)                       # placeholder for this step
             stripped = stripped[2:].strip()
             key_indent = ind + 2
-        elif item_indent is not None and ind >= item_indent + 2:
+        elif item_indent is not None and ind == item_indent + 2:
             key_indent = ind
         else:
+            # Deeper than a step's own keys, and not consumed by a block scalar or a nested
+            # block below: this reader does not know what it is, so it stops. An earlier version
+            # accepted any depth, which let a nested `with:`/`name:` be read as the step's name.
             raise WorkflowParseError(f"line {i + 1}: not understood inside `steps:`: {stripped!r}")
 
-        if ":" in stripped:
-            key, _, value = stripped.partition(":")
-            key, value = key.strip(), value.strip()
-            if value in ("|", ">", "|-", ">-", "|+", ">+"):
-                # Block scalar: skip everything indented deeper than the key that introduced it.
+        if ":" not in stripped:
+            raise WorkflowParseError(f"line {i + 1}: not a `key: value` line: {stripped!r}")
+
+        key, _, value = stripped.partition(":")
+        key, value = key.strip(), value.strip()
+        if key == "<<" or value.startswith(("*", "&")):
+            raise WorkflowParseError(
+                f"line {i + 1}: YAML merge key or anchor/alias inside `steps:` ({stripped!r}); "
+                "this reader resolves neither and will not guess"
+            )
+        if value in ("|", ">", "|-", ">-", "|+", ">+") or value == "":
+            # A block scalar, or a nested mapping/sequence (`with:`, `env:`). Either way its
+            # contents are not this step's own fields: skip everything indented deeper.
+            i += 1
+            while i < n and (is_skippable(i) or indent_of(i) > key_indent):
                 i += 1
-                while i < n and (is_skippable(i) or indent_of(i) > key_indent):
-                    i += 1
-                continue
-            if key == "name":
-                if not names:
-                    raise WorkflowParseError(f"line {i + 1}: `name:` outside any step")
-                names[-1] = unquote(value)
+            continue
+        if key == "name":
+            if not names:
+                raise WorkflowParseError(f"line {i + 1}: `name:` outside any step")
+            if names[-1] is not None:
+                raise WorkflowParseError(f"line {i + 1}: step has more than one `name:`")
+            names[-1] = check_step_name(value, i + 1)
         i += 1
 
     if not names:
@@ -373,6 +432,134 @@ def check_install_script_labels(script: str, ci_steps: list[str], problems: list
         )
 
 
+SELECTION_RE = re.compile(
+    r"^# --- platform selection.*?^# --- end platform selection[^\n]*$",
+    re.S | re.M,
+)
+
+# (uname -s, uname -m) -> the archive the published script must choose. The last entry is a
+# platform with no recorded archive: the script must refuse it rather than fall back to one.
+PLATFORM_CASES = [
+    ("Linux", "x86_64", "lean-4.31.0-linux.tar.zst"),
+    ("Linux", "aarch64", "lean-4.31.0-linux_aarch64.tar.zst"),
+    ("Darwin", "arm64", "lean-4.31.0-darwin_aarch64.tar.zst"),
+    ("Darwin", "x86_64", "lean-4.31.0-darwin.tar.zst"),
+    ("FreeBSD", "riscv64", None),
+]
+CI_PLATFORM = ("Linux", "x86_64")
+
+
+def check_install_script_platforms(script: str, ci_asset: str | None, ci_digest: str | None,
+                                   problems: list[str]) -> None:
+    """Run the published script's platform-selection block against a stubbed `uname`.
+
+    This is the one part of the install script that *is* executed here, and it is executed
+    because a constant is exactly what went wrong: the script used to hard-wire one platform's
+    archive, so a reader on Linux — the platform CI itself runs on — would have downloaded and
+    unpacked a macOS build while the document called the procedure equivalent to CI's.
+
+    For each recorded platform the block must select that platform's archive together with its
+    recorded digest; for a platform with no recorded archive it must exit nonzero rather than
+    default to one; and the pair it selects for the runner's platform must be the pair
+    `.github/workflows/ci.yml` installs.
+    """
+    m = SELECTION_RE.search(script)
+    if not m:
+        problems.append(
+            "reports/TOOLCHAIN.md: the install script has no `# --- platform selection` block, "
+            "so which archive it picks on which platform cannot be established"
+        )
+        return
+
+    fragment = m.group(0)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpdir = pathlib.Path(tmp)
+        stub = tmpdir / "uname"
+        stub.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            '  -s) echo "${FAKE_UNAME_S}" ;;\n'
+            '  -m) echo "${FAKE_UNAME_M}" ;;\n'
+            '  *) echo "${FAKE_UNAME_S}" ;;\n'
+            "esac\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        harness = tmpdir / "select.sh"
+        harness.write_text(
+            "set -eu\n" + fragment + '\nprintf "%s %s\\n" "${ASSET}" "${DIGEST}"\n',
+            encoding="utf-8",
+        )
+        env = {"PATH": f"{tmpdir}:/usr/bin:/bin", "HOME": str(tmpdir)}
+        selected: dict[tuple[str, str], str] = {}
+        for sysname, machine, expected_asset in PLATFORM_CASES:
+            proc = subprocess.run(
+                ["sh", str(harness)], capture_output=True, text=True,
+                env={**env, "FAKE_UNAME_S": sysname, "FAKE_UNAME_M": machine},
+            )
+            out = (proc.stdout + proc.stderr).strip()
+            if expected_asset is None:
+                if proc.returncode == 0:
+                    problems.append(
+                        f"reports/TOOLCHAIN.md: on {sysname}/{machine}, which has no recorded "
+                        f"archive, the install script selected something instead of failing: "
+                        f"{out!r}"
+                    )
+                elif "UNSUPPORTED PLATFORM" not in out:
+                    problems.append(
+                        f"reports/TOOLCHAIN.md: on {sysname}/{machine} the install script failed "
+                        f"without saying the platform is unsupported: {out!r}"
+                    )
+                continue
+            if proc.returncode != 0:
+                problems.append(
+                    f"reports/TOOLCHAIN.md: the install script fails on {sysname}/{machine}, a "
+                    f"platform whose archive this repository records: {out!r}"
+                )
+                continue
+            parts = proc.stdout.split()[-2:]
+            if len(parts) != 2:
+                problems.append(
+                    f"reports/TOOLCHAIN.md: on {sysname}/{machine} the selection block printed "
+                    f"no ASSET/DIGEST pair: {out!r}"
+                )
+                continue
+            asset, digest = parts
+            selected[(sysname, machine)] = asset
+            if asset != expected_asset:
+                problems.append(
+                    f"reports/TOOLCHAIN.md: on {sysname}/{machine} the install script selects "
+                    f"{asset}, expected {expected_asset}"
+                )
+            elif LEAN_RELEASE_DIGESTS.get(asset) != digest:
+                problems.append(
+                    f"reports/TOOLCHAIN.md: on {sysname}/{machine} the install script pairs "
+                    f"{asset} with digest {digest}, the recorded digest is "
+                    f"{LEAN_RELEASE_DIGESTS.get(asset)}"
+                )
+
+    covered = set(selected.values())
+    if covered != set(LEAN_RELEASE_DIGESTS):
+        problems.append(
+            "reports/TOOLCHAIN.md: the install script does not select every recorded archive; "
+            f"selected {sorted(covered)}, recorded {sorted(LEAN_RELEASE_DIGESTS)}"
+        )
+    runner_asset = selected.get(CI_PLATFORM)
+    if runner_asset is not None and ci_asset is not None and runner_asset != ci_asset:
+        problems.append(
+            f"reports/TOOLCHAIN.md: on the runner's platform ({CI_PLATFORM[0]}/"
+            f"{CI_PLATFORM[1]}) the install script selects {runner_asset}, but "
+            f"{WORKFLOW} installs {ci_asset} — the local procedure and CI would install "
+            "different builds"
+        )
+    if (runner_asset is not None and ci_digest is not None
+            and LEAN_RELEASE_DIGESTS.get(runner_asset) != ci_digest):
+        problems.append(
+            f"reports/TOOLCHAIN.md: the digest recorded for {runner_asset} differs from the one "
+            f"{WORKFLOW} verifies ({ci_digest})"
+        )
+
+
 def run(cmd: list[str], cwd: pathlib.Path) -> tuple[int, str]:
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     return proc.returncode, proc.stdout + proc.stderr
@@ -478,13 +665,26 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
+    ci_text = (root / WORKFLOW).read_text(encoding="utf-8")
+    ci_asset_m = re.search(r'LEAN_ASSET:\s*"([^"]+)"', ci_text)
+    ci_digest_m = re.search(r'LEAN_ASSET_SHA256:\s*"([^"]+)"', ci_text)
+
     structural_run: list[str] = []
     install_script = extract_install_script(docs["reports/TOOLCHAIN.md"], problems)
     structural_run.append(DECLARED_STRUCTURAL_CHECKS[0])
     if install_script is not None:
         check_install_script_syntax(install_script, problems)
         check_install_script_labels(install_script, ci_steps, problems)
-    structural_run.append(DECLARED_STRUCTURAL_CHECKS[1])
+        structural_run.append(DECLARED_STRUCTURAL_CHECKS[1])
+        check_install_script_platforms(
+            install_script,
+            ci_asset_m.group(1) if ci_asset_m else None,
+            ci_digest_m.group(1) if ci_digest_m else None,
+            problems,
+        )
+        structural_run.append(DECLARED_STRUCTURAL_CHECKS[2])
+    else:
+        structural_run += list(DECLARED_STRUCTURAL_CHECKS[1:])
     if problems:
         print("check_doc_claims.py: FAIL — the published install script does not hold up",
               file=sys.stderr)
@@ -554,26 +754,6 @@ def main() -> int:
     # The ASSET/DIGEST pair inside reports/TOOLCHAIN.md's install script, which is what a reader
     # actually runs. Only the table above it used to be checked, so a mistyped digest in the
     # script itself would have gone unnoticed — and did, once, before this check existed.
-    script_asset = re.search(r"^ASSET=(\S+)$", install_script, flags=re.M)
-    script_digest = re.search(r"^DIGEST=([0-9a-f]{64})$", install_script, flags=re.M)
-    if not script_asset or not script_digest:
-        problems.append(
-            "reports/TOOLCHAIN.md: the install script no longer declares an ASSET= and a "
-            "64-hex-digit DIGEST= on their own lines, so the pair a reader would run could not "
-            "be checked"
-        )
-    elif script_asset.group(1) not in LEAN_RELEASE_DIGESTS:
-        problems.append(
-            f"reports/TOOLCHAIN.md: the install script names archive {script_asset.group(1)}, "
-            "which has no digest recorded in this checker"
-        )
-    elif LEAN_RELEASE_DIGESTS[script_asset.group(1)] != script_digest.group(1):
-        problems.append(
-            f"reports/TOOLCHAIN.md: the install script pairs {script_asset.group(1)} with digest "
-            f"{script_digest.group(1)}, the recorded digest is "
-            f"{LEAN_RELEASE_DIGESTS[script_asset.group(1)]}"
-        )
-
     linux_asset = extract(r'LEAN_ASSET:\s*"([^"]+)"', ci, "the pinned archive name", problems)
     if linux_asset and linux_asset not in LEAN_RELEASE_DIGESTS:
         problems.append(
@@ -792,8 +972,9 @@ def main() -> int:
 
     print(
         f"document claims hold: {len(DECLARED_STRUCTURAL_CHECKS)} structural check(s) on the "
-        f"published install script passed (single block, sh -n, and CI step labels against all "
-        f"{len(ci_steps)} workflow steps); "
+        f"published install script passed (single block, sh -n, CI step labels against all "
+        f"{len(ci_steps)} workflow steps, and archive selection exercised on "
+        f"{len(PLATFORM_CASES)} platforms with a stubbed uname); "
         f"{len(transcripts)} published transcript(s) matched exactly (one "
         f"block each, in its own section); the build transcript matched on modules "
         f"({len(built_modules)}) and job count ({jobs}); {len(claims)} numeric/pin claim(s) "

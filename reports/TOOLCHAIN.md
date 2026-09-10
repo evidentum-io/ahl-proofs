@@ -50,7 +50,11 @@ running only the manifest before the install and never cross-checking the pin at
 repointed `lean-toolchain` passed locally and failed in CI, which is the one outcome this section
 exists to prevent.
 
-Pick the archive for your platform:
+The four archives this repository records, with the SHA-256 of each. **The script below picks
+the right one from `uname -s` and `uname -m`; you do not choose.** A platform not in this table
+makes it exit 1 saying so, rather than installing whichever archive happens to be written down
+first — which is what an earlier version did, hard-wiring one platform's pair and so handing a
+reader on Linux a macOS build while calling the procedure equivalent to CI's.
 
 | Platform | Archive (all under `https://github.com/leanprover/lean4/releases/download/v4.31.0/`) | SHA-256 |
 |---|---|---|
@@ -86,13 +90,42 @@ set -eu
 REPO="${1:-.}"
 cd "${REPO}"
 
-# --- from the table above; change all four together, never one alone ------------------------
-ASSET=lean-4.31.0-darwin_aarch64.tar.zst
-DIGEST=264105500c8abdf37b68ffe03390a783ed259807807222698da8dd92d6ce0a27
+# --- the pinned release; change these two together, never one alone -------------------------
 EXPECTED_LEAN_VERSION=4.31.0
 EXPECTED_LEAN_COMMIT=68218e876d2a38b1985b8590fff244a83c321783
 
 PREFIX="$HOME/.local/lean-${EXPECTED_LEAN_VERSION}"
+
+# --- platform selection ---------------------------------------------------------------------
+# Every archive in the table above, with its recorded SHA-256, chosen by uname. An unrecognised
+# platform is an error, never a default: installing "whichever archive was written down first"
+# is how a reader on Linux ends up unpacking a macOS build, which is what an earlier version of
+# this script did by hard-wiring one platform's pair.
+case "$(uname -s)/$(uname -m)" in
+  Linux/x86_64)
+    ASSET=lean-4.31.0-linux.tar.zst
+    DIGEST=07a633cc8d9151cbc08825ea4cdda50d4b02a2c9cb852c0131b13046f49cad7f
+    ;;
+  Linux/aarch64 | Linux/arm64)
+    ASSET=lean-4.31.0-linux_aarch64.tar.zst
+    DIGEST=b1bf1d3c586b76cf4a86212a595d8b9edd99f438a41cce85d5780fa9347c811b
+    ;;
+  Darwin/arm64)
+    ASSET=lean-4.31.0-darwin_aarch64.tar.zst
+    DIGEST=264105500c8abdf37b68ffe03390a783ed259807807222698da8dd92d6ce0a27
+    ;;
+  Darwin/x86_64)
+    ASSET=lean-4.31.0-darwin.tar.zst
+    DIGEST=6dac7a8f9d6d0bc339b4ea9376c06a88f3fd1a7f462beb3c7ded9fbc934f3fb5
+    ;;
+  *)
+    echo "UNSUPPORTED PLATFORM: $(uname -s)/$(uname -m)"
+    echo "Recorded archives cover Linux x86_64/aarch64 and macOS arm64/x86_64 only."
+    exit 1
+    ;;
+esac
+# --- end platform selection -----------------------------------------------------------------
+echo "platform $(uname -s)/$(uname -m): ${ASSET}"
 
 # CI step 2 [Verify reports/PROOF.sha256]. The hash manifest.
 python3 scripts/gen_proof_sha256.py --check
