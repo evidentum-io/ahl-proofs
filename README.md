@@ -16,11 +16,17 @@ evidence, not a proof. See "What is NOT established" in `reports/PROOF.md` and "
 the reference implementation" below before citing this repository as covering the
 implementation.
 
-No unfinished proof. No `axiom` declaration of our own: every assumption is a parameter or a
+No unfinished proof. **No `axiom` declaration of our own anywhere in the library**: every
+assumption is a parameter or a
 structure field carrying a doc comment that cites the I-D section it comes from.
 `./scripts/check_axioms.sh` checks both claims by machine on every CI run, over every constant in
 the compiled `Lean.Environment` this repository produces — not a curated subset of theorems — and
-`lake build` itself also fails on the `declaration uses 'sorry'` warning alone. Read
+`lake build` itself also fails on the `declaration uses 'sorry'` warning alone. The word *library*
+is exact: the claim is about `AhlProofs`, which is what the audit walks. The audit additionally
+reports any `axiom` declared in its own file ahead of its own evaluation — a gap found and closed
+after an `axiom` there passed everything — but an axiom appended to a declared auxiliary Lean file
+*after* that point is inert (nothing imports it, and the audit has already run) and is not
+reported. `reports/PROOF.md` states that boundary where it belongs. Read
 **"Trust boundary"** in `reports/PROOF.md` first: it states, in one place, what these checks
 establish and the thing they cannot establish — they live in the repository they check, so they
 are strong against forgetting and weak against intent. "Continuous integration and audit" below
@@ -104,7 +110,7 @@ The gate is `./scripts/check_axioms.sh`, three layers in order:
    checked here against every constant on every run, at a finer grain than the 102 named
    theorems, and it still holds exactly.
 
-**35 fixture runs covering 16 failure modes** — an unimported module, an `example` under a locally
+**35 fixture runs covering 18 failure modes** — an unimported module, an `example` under a locally
 relaxed `warningAsError`, a locally skipped kernel typecheck, an unfinished theorem, a top-level
 `axiom`, a new file left out of the hash manifest (run twice, with and without its `import` line,
 to show the manifest layer works independently of the import invariant), a forbidden lexeme in the
@@ -129,9 +135,12 @@ must match those of the steps they mirror — every command in command position,
 declared list of indifferent ones, with shell the recogniser cannot read treated as an error, so a
 command appended to an existing step is caught however it is spelled — and whose every workflow
 workflow, job and step must fit a strict schema — admitted keys only, at all three levels, plus
-the declared runner image, the declared job environment and triggers with no branch filter — so
-neither a step nor the whole job can be disabled with `if: false` while everything else still
-looks right — and whose platform-selection block is parsed — never executed — to confirm it picks
+the declared runner image, the declared job environment, the exact `uses:` action, and triggers
+with no branch filter — so neither a step nor the whole job can be disabled with `if: false`, and
+the checkout action cannot be swapped for another repository, while everything else still looks
+right. **What each step actually runs is not compared with anything**: a comparison of command
+sets was removed after producing two defects of its own, and which commands a step runs is
+maintained by hand — and whose platform-selection block is parsed — never executed — to confirm it picks
 each recorded platform's archive and digest and refuses an unrecorded platform. `.github/workflows/ci.yml` is
 the source of truth for the step order and is read structurally, by a dependency-free reader that
 rejects anything outside the shape it understands rather than guessing. That list is

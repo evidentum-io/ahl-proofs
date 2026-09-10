@@ -137,6 +137,24 @@ in `commit_plain_descriptor_collision`. Checked here against every constant unde
 not a hand-picked list of "the interesting theorems" — see the module docstring. -/
 def expectedChoiceUsers : List Name := [`AhlProofs.commit_plain_descriptor_collision]
 
+/-- Whether `name` was declared in the file currently being elaborated — that is, in **this**
+file — rather than imported from a module.
+
+This exists because the audit had a blind spot exactly where it was least expected: itself.
+`isLibraryConst` filters by home module, and a constant declared here has no home module at all,
+so `axiom smuggled_in_audit : False` appended to this file passed the audit, passed the source
+policy (`axiom` is not one of its four lexemes) and passed the whole gate. Such an axiom cannot
+make any AhlProofs theorem depend on it — nothing imports this file, and `collectAxioms` over the
+library would not reach it — so no proof was ever at risk. What was at risk was the sentence:
+`README.md` says "No `axiom` declaration of our own", and until now that was true of the library
+and unchecked of the tool that certifies it.
+
+The boundary is exact and is stated wherever the claim is made: `#eval` runs where it stands, so
+this reports axioms declared **ahead of** the evaluation below. One appended after it is inert —
+nothing imports this file and the audit has already run — and is not reported. -/
+def declaredInThisFile (env : Environment) (name : Name) : Bool :=
+  (env.getModuleIdxFor? name).isNone
+
 #eval show MetaM Unit from do
   let env ← getEnv
   let mut scanned : Nat := 0
@@ -144,7 +162,11 @@ def expectedChoiceUsers : List Name := [`AhlProofs.commit_plain_descriptor_colli
   let mut outsideAllowed : Array (Name × Name) := #[]
   let mut sorryUsers : Array Name := #[]
   let mut choiceUsers : Array Name := #[]
+  let mut auditOwnAxioms : Array Name := #[]
   for (name, info) in env.constants do
+    if declaredInThisFile env name then
+      if let .axiomInfo _ := info then
+        auditOwnAxioms := auditOwnAxioms.push name
     if isLibraryConst env name then
       scanned := scanned + 1
       if let .axiomInfo _ := info then
@@ -166,11 +188,19 @@ def expectedChoiceUsers : List Name := [`AhlProofs.commit_plain_descriptor_colli
   IO.println s!"Classical.choice used by: {choiceUsers}"
   IO.println s!"axiom(s) outside the allowed set {allowedAxioms}: \
 {if outsideAllowed.isEmpty then "(none)" else toString outsideAllowed}"
+  IO.println s!"axiom(s) declared by this audit file itself: \
+{if auditOwnAxioms.isEmpty then "(none)" else toString auditOwnAxioms}"
 
   let mut problems : Array String := #[]
   if scanned == 0 then
     problems := problems.push
       "zero constants scanned under AhlProofs — refusing to report success on nothing audited"
+  if !auditOwnAxioms.isEmpty then
+    problems := problems.push
+      s!"this audit file declares axiom(s) of its own: {auditOwnAxioms}. They cannot affect any \
+AhlProofs theorem — nothing imports this file, and the library's axiom claim is about \
+`AhlProofs` — but a tool that certifies the absence of axioms should not smuggle one, and this \
+is reported for every axiom declared ahead of the evaluation below."
   if !ownAxioms.isEmpty then
     problems := problems.push
       s!"own axiom declaration(s), not part of Lean's trusted kernel: {ownAxioms}"

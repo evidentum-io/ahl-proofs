@@ -27,9 +27,17 @@ and compare it against these documents cannot rest on that.
   exist.
 * **The published install script.** `reports/TOOLCHAIN.md` publishes a runnable script that
   nothing else in this repository executes — not CI, not the fixtures — and it drifted from the
-  workflow once for exactly that reason. Two checks now hold it: there is exactly one `#!/bin/sh`
-  block, inside the Install section, and it passes `sh -n`; and its `# CI step N [key].` labels
-  cover the workflow's steps once each, in order, with each key occurring in that step's name.
+  workflow once for exactly that reason. Three checks hold it: there is exactly one `#!/bin/sh`
+  block, inside the Install section, and it passes `sh -n`; its `# CI step N [key].` labels cover
+  the workflow's steps once each, in order, with each key occurring in that step's name; and its
+  platform-selection block is parsed and checked against the recorded archives.
+
+  **What each labelled block actually runs is not compared with anything.** A comparison of
+  command sets used to live here and was removed after producing two defects of its own in two
+  rounds — the second being that commands with side effects (`rm`, `mv`, `mkdir`) sat in its list
+  of indifferent ones, so `rm -f reports/PROOF.sha256` appended to the script would have compared
+  as no change at all. What a step does, and whether the published script does the same, is
+  maintained by hand and rests on review of the diff.
   `.github/workflows/ci.yml` is the source of truth and is read structurally, not by regex over
   its text — see `parse_workflow_steps`, which is dependency-free and cross-checked against
   PyYAML wherever that happens to be installed.
@@ -51,7 +59,6 @@ import argparse
 import difflib
 import pathlib
 import re
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -94,7 +101,6 @@ DECLARED_STRUCTURAL_CHECKS = (
     "the published install script is a single block and passes sh -n",
     "the published install script's CI step labels match .github/workflows/ci.yml",
     "the published install script selects the recorded archive for every recorded platform",
-    "the commands inside each labelled block match the workflow step it mirrors",
 )
 DECLARED_CLAIM_LABELS = frozenset({
     "constant and theorem counts",
@@ -140,6 +146,14 @@ DECLARED_RUNNER = "ubuntu-latest"
 DECLARED_JOB_ENV = frozenset({
     "EXPECTED_LEAN_VERSION", "EXPECTED_LEAN_COMMIT", "LEAN_ASSET", "LEAN_ASSET_SHA256",
 })
+# The exact actions this workflow may use — owner, repository and commit, not a shape.
+#
+# Checking the *form* of a pin was not enough, and the gap was wide: `evil/checkout@<40 hex>`
+# satisfied it, kept the step's name, and so satisfied the label check too. That action runs
+# before every check in the job and can replace the working tree wholesale, after which everything
+# downstream verifies whatever it left behind. A pinned SHA is only worth what the repository it
+# points into is worth.
+DECLARED_USES = ("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",)
 USES_PIN_RE = re.compile(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}")
 
 
@@ -162,6 +176,16 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
     """
     lines = text.splitlines()
 
+    # A tab is not indentation in YAML, and this reader measures indentation in spaces: a tabbed
+    # line would be read at the wrong depth, or at depth zero. Refuse the whole file rather than
+    # guess, which is the same rule the rest of this reader follows.
+    tabbed = [k + 1 for k, ln in enumerate(lines) if "\t" in ln]
+    if tabbed:
+        raise WorkflowParseError(
+            f"tab character(s) on line(s) {tabbed}; this workflow must be indented with spaces "
+            "only, because indentation is how this reader determines structure"
+        )
+
     def indent_of(i: int) -> int:
         return len(lines[i]) - len(lines[i].lstrip(" "))
 
@@ -182,6 +206,7 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
         body of its own (nested lines or a non-empty value)."""
         values: dict[str, str] = {}
         has_body: dict[str, bool] = {}
+        seen_order: list[str] = []
         child_indent = None
         last_key = None
         k = start + 1
@@ -200,6 +225,14 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
                     raise WorkflowParseError(f"line {k + 1}: not a `key: value` line: {s!r}")
                 key, _, value = s.partition(":")
                 last_key = key.strip()
+                if last_key in values:
+                    # A duplicate silently overwrites in a dict, so the reader would report the
+                    # last one and miss the first — the opposite of fail-closed.
+                    raise WorkflowParseError(
+                        f"line {k + 1}: duplicate key {last_key!r} in the block opened at line "
+                        f"{start + 1}"
+                    )
+                seen_order.append(last_key)
                 values[last_key] = value.strip()
                 has_body[last_key] = bool(value.strip())
             elif last_key is not None:
@@ -220,6 +253,8 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
         if ":" not in s:
             raise WorkflowParseError(f"line {i + 1}: not a `key: value` line at top level: {s!r}")
         key = s.partition(":")[0].strip()
+        if key in top_values:
+            raise WorkflowParseError(f"line {i + 1}: duplicate top-level key {key!r}")
         top_values[key] = s.partition(":")[2].strip()
         if key == "on":
             on_line = i
@@ -371,7 +406,6 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
         return value
 
     names: list[str] = []
-    runs: list[str] = []
     uses: list[str] = []
     keys: list[set[str]] = []
     item_indent = None
@@ -397,7 +431,6 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
                     f"line {i + 1}: step list item at indent {ind}, expected {item_indent}"
                 )
             names.append(None)                       # placeholder for this step
-            runs.append("")
             uses.append("")
             keys.append(set())
             stripped = stripped[2:].strip()
@@ -421,21 +454,19 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
                 "this reader resolves neither and will not guess"
             )
         if names:
+            if key in keys[-1]:
+                raise WorkflowParseError(
+                    f"line {i + 1}: step {len(names)} declares {key!r} twice"
+                )
             keys[-1].add(key)
         if value in ("|", ">", "|-", ">-", "|+", ">+") or value == "":
             # A block scalar, or a nested mapping/sequence (`with:`, `env:`). Either way its
-            # contents are not this step's own fields. A `run:` block scalar is captured (its
-            # commands are compared against the published script); anything else is skipped.
-            body: list[str] = []
+            # contents are not this step's own fields, and the value of a `run:` block is not
+            # read: what a step *does* is no longer compared against anything (see
+            # "Trust boundary" in reports/PROOF.md). Only that the key is present is recorded.
             i += 1
             while i < n and (is_skippable(i) or indent_of(i) > key_indent):
-                if not is_skippable(i):
-                    body.append(lines[i][key_indent:])
                 i += 1
-            if key == "run" and value != "":
-                if not names:
-                    raise WorkflowParseError("`run:` outside any step")
-                runs[-1] = "\n".join(body)
             continue
         if key == "name":
             if not names:
@@ -443,10 +474,6 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
             if names[-1] is not None:
                 raise WorkflowParseError(f"line {i + 1}: step has more than one `name:`")
             names[-1] = check_step_name(value, i + 1)
-        elif key == "run":
-            if not names:
-                raise WorkflowParseError(f"line {i + 1}: `run:` outside any step")
-            runs[-1] = value
         elif key == "uses":
             if not names:
                 raise WorkflowParseError(f"line {i + 1}: `uses:` outside any step")
@@ -465,8 +492,7 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
     # This is the check that was missing, and its absence was the worst hole in the whole
     # construction: `if: false` on the regression-fixtures step, with the manifest regenerated as
     # any author would, produced a green run that never executed a single fixture. The label check
-    # saw the step in place, the command comparison saw the same commands, and that the step would
-    # not run was visible to nothing. `continue-on-error: true` does the same for the gate.
+    # saw the step in place, and that the step would not run was visible to nothing. `continue-on-error: true` does the same for the gate.
     # Rather than enumerate the fields that disable a step — a list that GitHub can extend without
     # telling us — the schema admits only the two fields this workflow uses and refuses everything
     # else, including fields that are perfectly ordinary elsewhere (`env`, `shell`,
@@ -488,12 +514,21 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
                 f"{'both' if has_run else 'neither'}"
             )
     for idx, (name, ref) in enumerate(zip(names, uses), start=1):
-        if ref and not USES_PIN_RE.fullmatch(ref):
+        if not ref:
+            continue
+        if not USES_PIN_RE.fullmatch(ref):
             raise WorkflowParseError(
                 f"step {idx} ({name!r}) uses {ref!r}, which is not pinned by a 40-character "
                 "commit SHA; a mutable tag can be repointed by the action's publisher"
             )
-    return [{"name": nm, "run": rn, "uses": us} for nm, rn, us in zip(names, runs, uses)]
+        if ref not in DECLARED_USES:
+            raise WorkflowParseError(
+                f"step {idx} ({name!r}) uses {ref!r}, which is not one of the declared actions "
+                f"{list(DECLARED_USES)}. The form of a pin is not the point: an action runs "
+                "before every check in this job and can replace the working tree, so which "
+                "repository it comes from is checked, not merely that it is pinned to something."
+            )
+    return [{"name": nm, "uses": us} for nm, us in zip(names, uses)]
 
 
 def workflow_steps(root: pathlib.Path) -> list[dict]:
@@ -511,361 +546,10 @@ def workflow_steps(root: pathlib.Path) -> list[dict]:
             "the dependency-free workflow reader disagrees with PyYAML about step names:\n"
             f"  reader: {[s['name'] for s in steps]}\n  PyYAML: {ref_names}"
         )
-    ref_cmds = [commands_in(s.get("run") or "") for s in reference]
-    own_cmds = [commands_in(s["run"]) for s in steps]
-    if ref_cmds != own_cmds:
-        raise WorkflowParseError(
-            "the dependency-free workflow reader disagrees with PyYAML about step commands:\n"
-            f"  reader: {own_cmds}\n  PyYAML: {ref_cmds}"
-        )
     return steps
 
 
 LABEL_RE = re.compile(r"^#\s*CI steps?\s+(\d+)(?:\s*-\s*(\d+))?\s*\[([^\]]*)\]\s*\.")
-
-# The vocabulary of commands compared between a workflow step and the script block that mirrors
-# it. This is **not** shell equivalence and is not offered as such: it is the set of tool
-# invocations that decide what a step actually does here, and everything outside it (`echo`,
-# `mkdir`, `mv`, `case`, variable assignments, redirections) is ignored. Comparing free shell text
-# would be either brittle or meaningless; comparing this vocabulary caught a real divergence —
-# `lake --version` present in CI's self-report step and absent from the published script — that
-# label-only comparison could not see.
-# ---------------------------------------------------------------------------------------------
-# Command comparison between a workflow step and the script block that mirrors it.
-#
-# The rule is inverted, the way the coverage rule was inverted: **every** command in command
-# position is compared, and only what is declared below as indifferent is dropped. The previous
-# version compared a vocabulary of commands it recognised, which meant anything it did not
-# recognise was silently equal — so `node evil.js` or `python3 -c '...'`, appended to the `run:` of
-# a step that already existed, changed no compared set and passed. A new *step* was caught by the
-# label check and a new *file* by the coverage rule; a new command inside an old step was caught
-# by nothing.
-#
-# The price is real and accepted: `echo`, `mkdir` and friends now have to be named. Naming them is
-# the point — an explicit list of what is considered indifferent can be read and argued with,
-# where "everything unfamiliar is fine" cannot.
-
-# Shell syntax, not commands. Words that open or close a construct.
-SHELL_KEYWORDS = frozenset({
-    "if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done",
-    "case", "esac", "in", "function", "select", ";;", "{", "}", "!",
-})
-
-# Declared indifferent: shell builtins and utilities that neither execute anything from this
-# repository nor fetch anything from outside it. Each is here because its presence or absence
-# cannot change what a step verifies. `eval`, `sh`, `bash`, `python3`, `node` and anything else
-# that can run code are deliberately **not** on this list.
-# Kept to what actually occurs: an entry that never fires is a place something could hide later,
-# so the checker reports unused entries and this list is pruned to match rather than padded
-# against hypothetical future need. Adding a command here is a deliberate, reviewable act.
-IGNORED_COMMANDS = frozenset({
-    # shell builtins that change no file and run nothing from this repository
-    "set", "echo", "cd", "export", "exit", "[",
-    # file and path utilities whose presence cannot change what a step verifies
-    "mkdir", "rm", "mv", "dirname", "mktemp", "tr",
-    # an inert query about the host
-    "uname",
-})
-
-# Prefixes that stand in front of a command without being one.
-COMMAND_PREFIXES = frozenset({"time", "exec", "nohup", "env"})
-
-# Commands that may never be declared indifferent, whatever else changes.
-#
-# An earlier attempt guarded the ignore list by requiring it to be disjoint from what is compared
-# — which cannot fire, because anything named in the ignore list is by construction absent from
-# the compared set. This is the check that can: moving `curl`, `node` or `eval` into
-# IGNORED_COMMANDS fails outright. It is a **denylist and therefore not complete** — an
-# interpreter nobody thought of could still be declared indifferent — but it names the ways code
-# and network reach actually enter a step here, and it turns the most likely mistake into a red
-# run instead of a quiet one.
-NEVER_IGNORABLE = frozenset({
-    "eval", "source", ".", "sh", "bash", "zsh", "dash", "ksh",
-    "python", "python3", "node", "ruby", "perl", "php", "deno", "bun",
-    "curl", "wget", "nc", "ncat", "ssh", "scp", "rsync", "git",
-    "lake", "lean", "elan", "make", "cmake", "docker", "npm", "npx", "pip", "pip3",
-    "sha256sum", "shasum", "tar", "unzip", "find", "xargs",
-})
-
-# Declared spelling equivalences: two commands that do the same job under different names on
-# different systems, normalised so that a legitimate portability branch is not read as a
-# divergence. `shasum -a 256 -c` is macOS's spelling of GNU `sha256sum -c`; the install script
-# offers both because a reader may be on either, while CI is always Linux.
-COMMAND_NORMALISATIONS = (
-    (re.compile(r"^(?:sha256sum|shasum)\b(?=.*\s-c\b)"), "sha256sum -c"),
-)
-
-_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_FLAG = re.compile(r"^--?[A-Za-z0-9][\w-]*$")
-_SCRIPT_PATH = re.compile(r"^\.?/?scripts/[\w./-]+$")
-_BARE_WORD = re.compile(r"^[a-z][a-z0-9._-]*$")
-_CASE_OPEN = re.compile(r"^case\b.*\bin$")
-_CASE_PATTERN = re.compile(r"^[^;]*\)\s*(?:;;)?$")
-
-
-SUBSTITUTION_PLACEHOLDER = "SUBST"
-
-
-def _extract_substitutions(line: str) -> tuple[str, list[str], list[str]]:
-    """Replace each `$( … )` / backtick substitution with a placeholder word.
-
-    Returns (line with placeholders, substitution bodies, problems). Cutting the line at `$(`
-    instead — which is what an earlier version did — left the outer piece with an unbalanced
-    quote, since the closing `"` sits after the substitution: `mkdir -p "$(dirname X)"` became
-    `mkdir -p "`. A placeholder keeps both halves quotable, and the body is returned to be scanned
-    in its own right, because a substitution is a command position.
-    """
-    out: list[str] = []
-    bodies: list[str] = []
-    problems: list[str] = []
-    i, n = 0, len(line)
-    sq = dq = False
-    while i < n:
-        c = line[i]
-        if sq:
-            out.append(c)
-            sq = c != "'"
-            i += 1
-            continue
-        if c == "'" and not dq:
-            sq = True
-            out.append(c)
-            i += 1
-            continue
-        if c == '"':
-            dq = not dq
-            out.append(c)
-            i += 1
-            continue
-        opener = "$(" if line.startswith("$(", i) else ("`" if c == "`" else None)
-        if opener is None:
-            out.append(c)
-            i += 1
-            continue
-        j = i + len(opener)
-        depth = 1
-        b_sq = b_dq = False
-        while j < n:
-            d = line[j]
-            if b_sq:
-                b_sq = d != "'"
-            elif d == "'" and not b_dq:
-                b_sq = True
-            elif d == '"':
-                b_dq = not b_dq
-            elif not b_dq:
-                if opener == "$(" and line.startswith("$(", j):
-                    depth += 1
-                    j += 1
-                elif opener == "$(" and d == ")":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                elif opener == "`" and d == "`":
-                    depth = 0
-                    break
-            j += 1
-        if j >= n:
-            problems.append(f"unterminated command substitution in {line.strip()!r}")
-            out.append(c)
-            i += 1
-            continue
-        bodies.append(line[i + len(opener):j])
-        out.append(SUBSTITUTION_PLACEHOLDER)
-        i = j + 1
-    if sq or dq:
-        problems.append(f"unbalanced quote in {line.strip()!r}")
-    return "".join(out), bodies, problems
-
-
-def _command_positions(line: str) -> tuple[list[str], list[str]]:
-    """Split a shell line into the pieces that begin at a command position.
-
-    Substitutions are lifted out first (see above) and returned as pieces of their own, since a
-    substitution body runs. What remains is split on `;`, `|`, `&`, `&&`, `||` and `(` outside
-    quotes; a redirection such as `2>&1` is text, not a separator; a trailing `#` comment ends the
-    line.
-    """
-    flat, bodies, problems = _extract_substitutions(line)
-    pieces: list[str] = []
-    cur: list[str] = []
-    sq = dq = False
-    i, n = 0, len(flat)
-    while i < n:
-        c = flat[i]
-        if sq:
-            cur.append(c)
-            sq = c != "'"
-            i += 1
-            continue
-        if c == "'" and not dq:
-            sq = True
-            cur.append(c)
-            i += 1
-            continue
-        if c == '"':
-            dq = not dq
-            cur.append(c)
-            i += 1
-            continue
-        if not dq:
-            if c == "#" and (not cur or cur[-1].isspace()):
-                break
-            if c == "&" and ((cur and cur[-1] == ">") or flat.startswith("&>", i)):
-                cur.append(c)
-                i += 1
-                continue
-            if flat.startswith("&&", i) or flat.startswith("||", i):
-                pieces.append("".join(cur))
-                cur = []
-                i += 2
-                continue
-            if c in "|;&(":
-                pieces.append("".join(cur))
-                cur = []
-                i += 1
-                continue
-            if c == ")":
-                pieces.append("".join(cur))
-                cur = []
-                i += 1
-                continue
-        cur.append(c)
-        i += 1
-    pieces.append("".join(cur))
-    for body in bodies:
-        sub_pieces, sub_problems = _command_positions(body)
-        pieces += sub_pieces
-        problems += sub_problems
-    return pieces, problems
-
-
-# Constructs this recogniser does not read. Finding one is an **error**, not an empty result.
-#
-# That inversion is the point of this round. The scanner used to return nothing for a line it did
-# not understand, which meant `CI_X=1 node evil.js`, `command node evil.js`,
-# `trap 'node evil.js' EXIT` and `if node evil.js; then` were each compared as no commands at all
-# — unknown treated as safe. The four forms are handled below; everything still unhandled now
-# fails loudly, so the set of shell this comparison covers is a fact about the code rather than a
-# hope. These scripts are ours and are about a hundred lines; when one needs a construct from this
-# list, the honest move is to add support for it deliberately, not to let it pass unread.
-UNSUPPORTED_MARKERS = (
-    ("<<", "here-document"),
-    ("<(", "process substitution"),
-    (">(", "process substitution"),
-    ("$((", "arithmetic substitution"),
-    (";&", "case fallthrough"),
-    ("${!", "indirect parameter expansion"),
-)
-
-# Keywords whose remainder is itself a command and must be scanned, not skipped.
-RECURSING_KEYWORDS = frozenset({"if", "elif", "while", "until", "!"})
-
-
-def _scan_words(words: list[str], compared: set[str], ignored_seen: set[str],
-                unsupported: set[str], depth: int = 0) -> None:
-    """Classify one command position, following the constructs listed in the module docstring."""
-    if depth > 4:
-        unsupported.add("command nesting deeper than this recogniser follows")
-        return
-    while words and words[0] in COMMAND_PREFIXES:
-        words = words[1:]
-    while words and _ASSIGNMENT.match(words[0]):
-        words = words[1:]          # `NAME=value cmd …` — the command is what follows
-    if not words:
-        return
-    head = words[0]
-    if head.endswith(")"):
-        return                     # a `case` pattern
-    if head in RECURSING_KEYWORDS:
-        _scan_words(words[1:], compared, ignored_seen, unsupported, depth + 1)
-        return
-    if head in SHELL_KEYWORDS:
-        return
-    if head.startswith(("$", "`", "{")):
-        unsupported.add(f"indirect or grouped command {head!r}")
-        return
-    if head == "trap":
-        # The payload is shell, and it runs. `trap 'node evil.js' EXIT` used to scan as nothing.
-        payload_pieces, payload_problems = _command_positions(
-            words[1] if len(words) > 1 else "")
-        unsupported.update(payload_problems)
-        for piece in payload_pieces:
-            _scan_piece(piece, compared, ignored_seen, unsupported, depth + 1)
-        return
-    if head in ("command", "env"):
-        rest = words[1:]
-        if head == "command" and rest and rest[0] in ("-v", "-V", "-p"):
-            return                 # a lookup: resolves a name, runs nothing
-        _scan_words(rest, compared, ignored_seen, unsupported, depth + 1)
-        return
-    if head in IGNORED_COMMANDS:
-        ignored_seen.add(head)
-        return
-    joined = " ".join(words)
-    for pattern, replacement in COMMAND_NORMALISATIONS:
-        if pattern.search(joined):
-            compared.add(replacement)
-            return
-    arg = words[1] if len(words) > 1 else ""
-    if _FLAG.match(arg) or _SCRIPT_PATH.match(arg) or _BARE_WORD.match(arg):
-        compared.add(f"{head} {arg}")
-    else:
-        compared.add(head)
-
-
-def _scan_piece(piece: str, compared: set[str], ignored_seen: set[str],
-                unsupported: set[str], depth: int = 0) -> None:
-    try:
-        words = shlex.split(piece, posix=True)
-    except ValueError as e:
-        unsupported.add(f"unparsable shell ({e}): {piece.strip()!r}")
-        return
-    _scan_words(words, compared, ignored_seen, unsupported, depth)
-
-
-def command_scan(text: str) -> tuple[set[str], set[str], set[str]]:
-    """Return (commands compared, ignored commands seen, unsupported constructs found).
-
-    Command position means: the start of a line, or immediately after `|`, `;`, `&`, `(`, `$(` or
-    a backtick, optionally behind one of COMMAND_PREFIXES and any number of `NAME=value`
-    assignments. Full-line and trailing comments are dropped, backslash continuations joined, and
-    `case` patterns recognised as syntax.
-    """
-    compared: set[str] = set()
-    ignored_seen: set[str] = set()
-    unsupported: set[str] = set()
-    in_case = False
-    joined_lines: list[str] = []
-    for raw in text.splitlines():
-        if joined_lines and joined_lines[-1].endswith("\\"):
-            joined_lines[-1] = joined_lines[-1][:-1].rstrip() + " " + raw.strip()
-        else:
-            joined_lines.append(raw)
-    for raw in joined_lines:
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        for marker, what in UNSUPPORTED_MARKERS:
-            if marker in line:
-                unsupported.add(f"{what} in {line!r}")
-        if _CASE_OPEN.match(line):
-            in_case = True
-        elif line == "esac":
-            in_case = False
-        if in_case and _CASE_PATTERN.match(line) and not line.startswith("case"):
-            continue
-        pieces, piece_problems = _command_positions(line)
-        unsupported.update(piece_problems)
-        for piece in pieces:
-            _scan_piece(piece, compared, ignored_seen, unsupported)
-    return compared, ignored_seen, unsupported
-
-
-def commands_in(text: str) -> list[str]:
-    """The compared commands of a chunk of shell, sorted."""
-    return sorted(command_scan(text)[0])
-
 
 def extract_install_script(doc: str, problems: list[str]) -> str | None:
     """The one `#!/bin/sh` block published in the Install section, or None with a problem filed.
@@ -972,74 +656,6 @@ def check_install_script_labels(script: str, ci_steps: list[dict], problems: lis
             f"workflow's steps exactly once, in order.\n"
             f"      workflow has {len(ci_steps)} step(s): {expected}\n"
             f"      script labels cover:            {covered}"
-        )
-
-    # Commands, not just labels. A label can point at the right step while the block under it
-    # runs something else — which is how `lake --version`, present in CI's self-report step, was
-    # missing from the published script without anything noticing.
-    for (lo, hi, _), body in zip(labels, blocks):
-        in_ci = sorted({
-            c for number in range(lo, hi + 1)
-            if 1 <= number <= len(ci_steps)
-            for c in commands_in(ci_steps[number - 1]["run"])
-        })
-        in_script = commands_in("\n".join(body))
-        if in_ci != in_script:
-            span = f"{lo}" if hi == lo else f"{lo}-{hi}"
-            problems.append(
-                f"reports/TOOLCHAIN.md: the commands under `CI step{'s' if hi > lo else ''} "
-                f"{span}` differ from the workflow's.\n"
-                f"      workflow runs: {in_ci}\n"
-                f"      script runs:   {in_script}\n"
-                f"      only in workflow: {sorted(set(in_ci) - set(in_script))}\n"
-                f"      only in script:   {sorted(set(in_script) - set(in_ci))}"
-            )
-
-    # Anti-vacuity for the comparison itself. Under the inverted rule the danger is no longer a
-    # vocabulary that recognises nothing but an ignore list that swallows everything.
-    all_ci_commands: set[str] = set()
-    all_ignored_seen: set[str] = set()
-    all_unsupported: set[str] = set()
-    for s in ci_steps:
-        seen_cmds, seen_ignored, seen_unsupported = command_scan(s["run"])
-        all_ci_commands |= seen_cmds
-        all_ignored_seen |= seen_ignored
-        all_unsupported |= {f"{WORKFLOW} step {s['name']!r}: {u}" for u in seen_unsupported}
-    script_cmds, script_ignored, script_unsupported = command_scan(script)
-    all_ignored_seen |= script_ignored
-    all_unsupported |= {f"the published install script: {u}" for u in script_unsupported}
-
-    if all_unsupported:
-        problems.append(
-            "shell this comparison does not read, which must be an error rather than an empty "
-            "result — an unread line contributes no commands and would compare as equal:\n      "
-            + "\n      ".join(sorted(all_unsupported))
-        )
-
-    if not IGNORED_COMMANDS:
-        problems.append("IGNORED_COMMANDS is empty — a declared list that names nothing")
-    if not all_ci_commands:
-        problems.append(
-            f"no command at all was recognised in {WORKFLOW} — either the workflow runs nothing "
-            "or the scanner has stopped seeing commands, and either way comparing empty sets "
-            "would pass"
-        )
-    forbidden_ignores = sorted(IGNORED_COMMANDS & NEVER_IGNORABLE)
-    if forbidden_ignores:
-        problems.append(
-            f"command(s) {forbidden_ignores} are declared indifferent but appear in "
-            "NEVER_IGNORABLE: each of them runs code or reaches the network, so dropping it from "
-            "the comparison would hide exactly what the comparison is for"
-        )
-    unused_ignores = sorted(IGNORED_COMMANDS - all_ignored_seen)
-    if unused_ignores:
-        print(
-            "check_doc_claims.py: note — declared indifferent but never seen: "
-            + ", ".join(unused_ignores)
-            + ". Each is a command this comparison would drop if it appeared; none of them "
-            "appears today. Prune what is not needed rather than letting the list grow into a "
-            "place things can hide.",
-            file=sys.stderr,
         )
 
     rows, mismatched = [], False
@@ -1357,10 +973,6 @@ def main() -> int:
             problems,
         )
         structural_run.append(DECLARED_STRUCTURAL_CHECKS[2])
-        # The command-set comparison lives inside check_install_script_labels, alongside the
-        # label comparison it strengthens; it is declared separately because it is a separate
-        # promise and must not be able to disappear silently.
-        structural_run.append(DECLARED_STRUCTURAL_CHECKS[3])
     else:
         structural_run += list(DECLARED_STRUCTURAL_CHECKS[1:])
     if problems:
@@ -1650,9 +1262,9 @@ def main() -> int:
 
     print(
         f"document claims hold: {len(DECLARED_STRUCTURAL_CHECKS)} structural check(s) on the "
-        f"published install script passed (single block, sh -n, CI step labels and command sets "
-        f"against all {len(ci_steps)} workflow steps, and the platform-selection block parsed "
-        f"and checked for exactly {len(DECLARED_PLATFORM_BRANCHES)} declared branches); "
+        f"published install script passed (single block, sh -n, CI step labels against all "
+        f"{len(ci_steps)} workflow steps, and the platform-selection block parsed and checked "
+        f"for exactly {len(DECLARED_PLATFORM_BRANCHES)} declared branches); "
         f"{len(transcripts)} published transcript(s) matched exactly (one "
         f"block each, in its own section); the build transcript matched on modules "
         f"({len(built_modules)}) and job count ({jobs}); {len(claims)} numeric/pin claim(s) "

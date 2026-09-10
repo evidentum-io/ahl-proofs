@@ -183,34 +183,13 @@ def fixture_8(root: pathlib.Path) -> None:
     (nested / "helper.sh").write_text("#!/bin/sh\n: nested audit helper\n", encoding="utf-8")
 
 
-def append_to_step(payload: str):
-    """A command appended to the `run:` of a workflow step that already exists.
-
-    One factory, several spellings. Each of these once scanned as *no commands at all*, so the
-    two command sets stayed equal and the run was green: a leading assignment, a `command`
-    prefix, a `trap` payload, and an `if` condition. Unknown shell now fails rather than
-    contributing nothing.
-    """
-    def apply(root: pathlib.Path) -> None:
-        wf = root / ".github" / "workflows" / "ci.yml"
-        t = wf.read_text(encoding="utf-8")
-        anchor = "        run: python3 scripts/check_imports.py\n"
-        assert t.count(anchor) == 1, "the workflow no longer has the step to anchor to"
-        wf.write_text(
-            t.replace(anchor, "        run: |\n"
-                              "          python3 scripts/check_imports.py\n"
-                              f"          {payload}\n"),
-            encoding="utf-8",
-        )
-    return apply
-
-
 def edit_workflow(old: str, new: str):
-    """A change above the step level: a job key, a top-level key, or the runner image.
+    """A change to the workflow above the step level, or to a step's own fields.
 
-    The step schema was closed at the wrong depth. `if: false` beside `runs-on:` disables the
-    whole job while every step-level check goes on reporting that the steps are exactly right;
-    `runs-on:` decides which machine everything runs on and is not pinned by digest.
+    The step schema was closed at the wrong depth once (`if: false` beside `runs-on:` disables the
+    whole job while every step-level check reports the steps are exactly right) and admitted the
+    wrong thing once (`evil/checkout@<40 hex>` satisfied a check on the *form* of a pin). Both are
+    exercised through this one factory.
     """
     def apply(root: pathlib.Path) -> None:
         wf = root / ".github" / "workflows" / "ci.yml"
@@ -218,6 +197,23 @@ def edit_workflow(old: str, new: str):
         assert t.count(old) == 1, f"anchor {old!r} not found exactly once in the workflow"
         wf.write_text(t.replace(old, new), encoding="utf-8")
     return apply
+
+
+def axiom_in_audit_file(root: pathlib.Path) -> None:
+    """An `axiom` declared in `scripts/Audit.lean`, ahead of the audit's own evaluation.
+
+    The audit filtered by *home module*, and a constant declared in the file being elaborated has
+    no home module — so an axiom here passed the audit, passed the source policy (`axiom` is not
+    one of its four lexemes) and passed the gate, while `README.md` said "no `axiom` declaration
+    of our own". It is planted before the `#eval` because that is the boundary of what the check
+    can see, and the boundary is stated where the claim is made.
+    """
+    audit = root / "scripts" / "Audit.lean"
+    t = audit.read_text(encoding="utf-8")
+    anchor = "#eval show MetaM Unit from do"
+    assert t.count(anchor) == 1, "Audit.lean no longer has the evaluation to anchor to"
+    audit.write_text(t.replace(anchor, "axiom smuggled_in_audit : False\n\n" + anchor),
+                     encoding="utf-8")
 
 
 def add_step_field(field: str):
@@ -229,25 +225,6 @@ def add_step_field(field: str):
         assert t.count(anchor) == 1, "the workflow no longer has the step to anchor to"
         wf.write_text(t.replace(anchor, anchor + f"        {field}\n"), encoding="utf-8")
     return apply
-
-
-def extra_command_in_existing_step(root: pathlib.Path) -> None:
-    """A command appended to the `run:` of a workflow step that already exists.
-
-    No new step, so the label check sees the same eleven; no new file, so the coverage rule sees
-    nothing; and under the old vocabulary comparison `node` was simply a word nobody recognised,
-    which made the two command sets equal and the run green.
-    """
-    wf = root / ".github" / "workflows" / "ci.yml"
-    t = wf.read_text(encoding="utf-8")
-    anchor = "        run: python3 scripts/check_imports.py\n"
-    assert t.count(anchor) == 1, "the workflow no longer has the step to anchor to"
-    wf.write_text(
-        t.replace(anchor, "        run: |\n"
-                          "          python3 scripts/check_imports.py\n"
-                          "          node /tmp/whatever.js\n"),
-        encoding="utf-8",
-    )
 
 
 def drop_fixed_file(root: pathlib.Path) -> None:
@@ -485,33 +462,18 @@ FIXTURES = [
     ]
 ] + [
     {
-        "id": f"13{suffix}",
-        "mode": "13",
-        "title": f"`{payload}` appended to an existing workflow step's run:",
-        "apply": append_to_step(payload),
-        "regen_manifest": True,
-        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 0,
-                   "docs": 1},
-        "layer": "docs",
-        "reason": ["CI step 3", "node"],
-        "gate_reason": "",
-    }
-    for suffix, payload in [
-        ("a", "node /tmp/whatever.js"),
-        ("b", "CI_X=1 node /tmp/whatever.js"),
-        ("c", "command node /tmp/whatever.js"),
-        ("d", "trap 'node /tmp/whatever.js' EXIT"),
-        ("e", "if node /tmp/whatever.js; then :; fi"),
-    ]
-] + [
-    {
         "id": f"15{suffix}",
         "mode": "15",
         "title": f"`{field}` added to a workflow step",
         "apply": add_step_field(field),
         "regen_manifest": True,
-        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 0,
-                   "docs": 1},
+        # Measure 0: a document-layer fixture needs no build, audit or gate of its own. The
+        # docs stage builds the library itself and fails if that build fails, so build success is
+        # still asserted; that the corruption is invisible to the source side is still asserted by
+        # the imports, policy and manifest stages. This saves a cold build and a gate run per
+        # document fixture.
+        "expect": {"build": None, "imports": 0, "policy": 0, "audit": None, "gate": None,
+                   "manifest": 0, "docs": 1},
         "layer": "docs",
         "reason": [needle, "schema does not admit"],
         "gate_reason": "",
@@ -528,8 +490,13 @@ FIXTURES = [
         "title": title,
         "apply": edit_workflow(anchor, replacement),
         "regen_manifest": True,
-        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 0,
-                   "docs": 1},
+        # Measure 0: a document-layer fixture needs no build, audit or gate of its own. The
+        # docs stage builds the library itself and fails if that build fails, so build success is
+        # still asserted; that the corruption is invisible to the source side is still asserted by
+        # the imports, policy and manifest stages. This saves a cold build and a gate run per
+        # document fixture.
+        "expect": {"build": None, "imports": 0, "policy": 0, "audit": None, "gate": None,
+                   "manifest": 0, "docs": 1},
         "layer": "docs",
         "reason": [needle],
         "gate_reason": "",
@@ -547,6 +514,56 @@ FIXTURES = [
         ("d", "a different runner image",
          "runs-on: ubuntu-latest", "runs-on: self-hosted",
          "runs on 'self-hosted', not the declared 'ubuntu-latest'"),
+    ]
+] + [
+    {
+        "id": "17",
+        "mode": "17",
+        "title": "the checkout action replaced by another repository, pin still well formed",
+        "apply": edit_workflow(
+            "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "uses: evil/checkout@0000000000000000000000000000000000000000"),
+        "regen_manifest": True,
+        "expect": {"build": None, "imports": 0, "policy": 0, "audit": None, "gate": None,
+                   "manifest": 0, "docs": 1},
+        "layer": "docs",
+        "reason": ["evil/checkout@", "not one of the declared actions"],
+        "gate_reason": "",
+    },
+    {
+        "id": "18",
+        "mode": "18",
+        "title": "an axiom declared in the audit file itself",
+        "apply": axiom_in_audit_file,
+        "regen_manifest": True,
+        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 1, "gate": 1, "manifest": 0,
+                   "docs": None},
+        "layer": "audit",
+        "reason": ["this audit file declares axiom(s) of its own", "smuggled_in_audit"],
+        "gate_reason": GATE_AUDIT,
+    },
+] + [
+    {
+        "id": f"19{suffix}",
+        "mode": "19",
+        "title": title,
+        "apply": edit_workflow(anchor, replacement),
+        "regen_manifest": True,
+        "expect": {"build": None, "imports": 0, "policy": 0, "audit": None, "gate": None,
+                   "manifest": 0, "docs": 1},
+        "layer": "docs",
+        "reason": [needle],
+        "gate_reason": "",
+    }
+    for suffix, title, anchor, replacement, needle in [
+        ("a", "a duplicate top-level key", "name: ci\n", "name: ci\nname: ci\n",
+         "duplicate top-level key 'name'"),
+        ("b", "a duplicate key on a step",
+         "        run: ./scripts/check_axioms.sh\n",
+         "        run: ./scripts/check_axioms.sh\n        run: echo nothing\n",
+         "declares 'run' twice"),
+        ("c", "a tab in place of indentation", "  lean:\n", "\tlean:\n",
+         "tab character(s) on line"),
     ]
 ] + [
     {
@@ -569,8 +586,13 @@ FIXTURES = [
         "regen_manifest": False,
         # Nothing in the sources changes, so every source-side stage passes and the manifest — which
         # does not hash the prose documents — is current. Only the document check can see this.
-        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 0,
-                   "docs": 1},
+        # Measure 0: a document-layer fixture needs no build, audit or gate of its own. The
+        # docs stage builds the library itself and fails if that build fails, so build success is
+        # still asserted; that the corruption is invisible to the source side is still asserted by
+        # the imports, policy and manifest stages. This saves a cold build and a gate run per
+        # document fixture.
+        "expect": {"build": None, "imports": 0, "policy": 0, "audit": None, "gate": None,
+                   "manifest": 0, "docs": 1},
         "layer": "docs",
         "reason": ["FreeBSD/x86_64", "no longer refused"],
         "gate_reason": "",
@@ -606,10 +628,10 @@ STAGES = ["build", "imports", "policy", "audit", "gate", "manifest", "docs"]
 # to go unnoticed. See "Trust boundary" in reports/PROOF.md.
 DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b", "7a", "7b", "7c", "7d", "8",
                  "9a", "9b", "9c", "10a", "10b", "10c", "12a", "12b", "12c",
-                 "13a", "13b", "13c", "13d", "13e", "15a", "15b", "15c",
-                 "16a", "16b", "16c", "16d", "14", "11")
-DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14",
-                  "15", "16")
+                 "15a", "15b", "15c", "16a", "16b", "16c", "16d",
+                 "17", "18", "19a", "19b", "19c", "14", "11")
+DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "14",
+                  "15", "16", "17", "18", "19")
 REQUIRED_KEYS = {
     "id", "mode", "title", "apply", "regen_manifest", "expect", "layer", "reason", "gate_reason",
 }
