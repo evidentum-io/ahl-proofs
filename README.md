@@ -70,7 +70,10 @@ The gate is `./scripts/check_axioms.sh`, three layers in order:
    compiled, so it is never audited either, and both `lake build` and the audit exit 0 while
    ignoring it entirely; a `.lean` outside both categories — in the repository root, say — was
    invisible to every check there was. The rule enumerates categories rather than directories, so
-   there is no next directory to forget.
+   there is no next directory to forget, and a `.lean` under `.git/`, `.lake/` or `__pycache__/`
+   is refused outright rather than skipped. The guarantee covers regular files named exactly
+   `.lean`; case variants and directory symlinks are refused, and Lean content under some other
+   name is outside it — see "Trust boundary" in `reports/PROOF.md`.
 2. **The policy over source text** (`scripts/check_source_policy.py`) — four lexemes are rejected
    in every `.lean` file in the working tree, with no allowlist of files or places. This is a
    policy over sources, deliberately not a semantic check: it decides nothing about meaning, and
@@ -98,7 +101,7 @@ The gate is `./scripts/check_axioms.sh`, three layers in order:
    checked here against every constant on every run, at a finer grain than the 102 named
    theorems, and it still holds exactly.
 
-**15 fixture runs covering 9 failure modes** — an unimported module, an `example` under a locally
+**19 fixture runs covering 11 failure modes** — an unimported module, an `example` under a locally
 relaxed `warningAsError`, a locally skipped kernel typecheck, an unfinished theorem, a top-level
 `axiom`, a new file left out of the hash manifest (run twice, with and without its `import` line,
 to show the manifest layer works independently of the import invariant), a forbidden lexeme in the
@@ -112,7 +115,7 @@ stopped propagating an exit status is caught too. It also validates its own rost
 starting, so a truncated or emptied fixture list fails instead of reporting success over nothing.
 The working tree is never written to, and the runner hashes every file under it except `.git/`,
 `.lake/` and `__pycache__/` before and after to prove it. `reports/PROOF.md`, "Required regression
-tests", lists all 15 runs with the exit status of every stage.
+tests", lists all 19 runs with the exit status of every stage.
 
 A defined list of claims in this file, in `reports/PROOF.md` and in `reports/TOOLCHAIN.md` is
 itself checked in CI by `scripts/check_doc_claims.py`: four published transcripts, the counts, the

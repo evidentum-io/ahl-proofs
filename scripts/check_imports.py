@@ -43,7 +43,31 @@ import sys
 LIBRARY_DIR = "AhlProofs"
 ROOT_MODULE = "AhlProofs"
 ROOT_FILE = "AhlProofs.lean"
+# The three directories that hold no repository source: git's own storage, lake's build output,
+# and Python bytecode caches. Nothing under them is written by a person, and — checked, not
+# assumed — none of them contains a single `.lean` file in this project, which takes no
+# dependencies and so never has Lake place sources under `.lake/`.
+#
+# They are **not** a hole in the coverage rule below, and this is the fourth shape of that hole to
+# turn up: `axiom hidden_in_pycache : False` in `__pycache__/Bad.lean` used to pass every check
+# while layer 1 printed "0 unclassified". Excluding a directory from classification is the same
+# mistake as forgetting to include one. So a `.lean` under any of these is not classified — it is
+# **refused**, because there is no legitimate way for one to be there.
+#
+# This is the single definition of the controlled area. `scripts/check_source_policy.py` and
+# `scripts/regression_fixtures.py` import it rather than repeating it, so the three walks over the
+# tree cannot drift apart.
 EXCLUDED_DIRS = {".git", ".lake", "__pycache__"}
+
+# What this repository calls a Lean file: a regular file whose name ends in exactly `.lean`.
+#
+# Said precisely because the guarantee should not read wider than the code. A file whose suffix
+# merely case-folds to `.lean` (`Bad.LEAN`) is rejected outright below rather than quietly
+# uncovered — Lean sources here are lower-case by convention and a variant spelling is either a
+# mistake or an attempt to slip past a suffix match. A file with Lean *content* and no `.lean`
+# suffix is outside this guarantee and outside every other check here: nothing in this repository
+# reads file contents to guess a language, and this document does not pretend otherwise.
+LEAN_SUFFIX = ".lean"
 
 # Every `.lean` file in this repository that is **not** part of the proof library, declared one by
 # one. Nothing else may exist.
@@ -195,10 +219,54 @@ def main() -> int:
                 f"{rel} is declared as an auxiliary Lean file but does not exist — a declaration "
                 "that names nothing is how this list stops meaning anything"
             )
-    every_lean = [
-        q for q in sorted(root.rglob("*.lean"))
-        if q.is_file() and not (EXCLUDED_DIRS & set(q.relative_to(root).parts))
+    # A symlinked directory would make "this repository's files" mean whatever it points at, and
+    # would put reachability outside the tree's control. There are none, and there is no use for
+    # one here. `.git` is left out of this scan only because git itself may legitimately use links
+    # in its own storage; nothing under `.git` is a Lean source, and the scan below refuses one
+    # anyway.
+    for q in sorted(root.rglob("*")):
+        parts = set(q.relative_to(root).parts)
+        if ".git" in parts:
+            continue
+        if q.is_symlink() and q.is_dir():
+            problems.append(
+                f"{q.relative_to(root)} is a symbolic link to a directory. This repository "
+                "contains none, and one would make the set of files it covers depend on "
+                "something outside it."
+            )
+
+    # Every `.lean` in the tree, excluded directories included: a file under one of them is not
+    # classified, it is refused. Case variants of the suffix are refused too, so that a coverage
+    # rule keyed on the exact suffix cannot be stepped around by spelling it differently.
+    all_lean: list[pathlib.Path] = []
+    for q in sorted(root.rglob("*")):
+        if not q.is_file() or q.is_symlink():
+            continue
+        suffix = q.suffix
+        if suffix.lower() != LEAN_SUFFIX:
+            continue
+        if suffix != LEAN_SUFFIX:
+            problems.append(
+                f"{q.relative_to(root)} spells the Lean suffix as {suffix!r}. Lean sources in "
+                f"this repository are named {LEAN_SUFFIX!r}; a variant spelling is either a "
+                "mistake or a way past a suffix match, and is refused either way."
+            )
+            continue
+        all_lean.append(q)
+
+    forbidden_area = [
+        q for q in all_lean if EXCLUDED_DIRS & set(q.relative_to(root).parts)
     ]
+    for q in forbidden_area:
+        problems.append(
+            f"{q.relative_to(root)} is a Lean file under a directory that holds no Lean source in "
+            f"this project ({', '.join(sorted(EXCLUDED_DIRS))}). Those directories are git's own "
+            "storage, lake's build output and Python bytecode caches; a `.lean` there is either a "
+            "mistake or an attempt to keep code out of classification. Remove it, or move it "
+            f"under {LIBRARY_DIR}/ and import it."
+        )
+
+    every_lean = [q for q in all_lean if q not in set(forbidden_area)]
     library_rels = {str(q.relative_to(root)) for q in found.values()} | {ROOT_FILE}
     unclassified = [
         str(q.relative_to(root)) for q in every_lean

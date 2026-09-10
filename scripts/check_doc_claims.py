@@ -548,15 +548,20 @@ SELECTION_RE = re.compile(
     re.S | re.M,
 )
 
-# (uname -s, uname -m) -> the archive the published script must choose. The last entry is a
-# platform with no recorded archive: the script must refuse it rather than fall back to one.
-PLATFORM_CASES = [
-    ("Linux", "x86_64", "lean-4.31.0-linux.tar.zst"),
-    ("Linux", "aarch64", "lean-4.31.0-linux_aarch64.tar.zst"),
-    ("Darwin", "arm64", "lean-4.31.0-darwin_aarch64.tar.zst"),
-    ("Darwin", "x86_64", "lean-4.31.0-darwin.tar.zst"),
-    ("FreeBSD", "riscv64", None),
-]
+# The complete branch set the published script may have: `(uname -s, uname -m)` -> archive.
+# `Linux/arm64` is a declared alias — some Linux ARM systems report `arm64` where others report
+# `aarch64` — and it is written down here rather than tolerated, because tolerating unlisted
+# branches is what let the previous version of this check pass a script that quietly handed
+# FreeBSD a Linux build. The comparison below is **exact equality**: a branch for a platform not
+# in this table fails, even when every required branch and the `*)` default are present and the
+# set of archives offered is unchanged.
+DECLARED_PLATFORM_BRANCHES = {
+    ("Linux", "x86_64"): "lean-4.31.0-linux.tar.zst",
+    ("Linux", "aarch64"): "lean-4.31.0-linux_aarch64.tar.zst",
+    ("Linux", "arm64"): "lean-4.31.0-linux_aarch64.tar.zst",
+    ("Darwin", "arm64"): "lean-4.31.0-darwin_aarch64.tar.zst",
+    ("Darwin", "x86_64"): "lean-4.31.0-darwin.tar.zst",
+}
 CI_PLATFORM = ("Linux", "x86_64")
 
 
@@ -662,30 +667,35 @@ def check_install_script_platforms(script: str, ci_asset: str | None, ci_digest:
         problems.append(f"reports/TOOLCHAIN.md: the platform-selection block is not readable: {e}")
         return
 
-    for sysname, machine, expected_asset in PLATFORM_CASES:
-        chosen = cases.get((sysname, machine))
-        if expected_asset is None:
-            if chosen is not None:
-                problems.append(
-                    f"reports/TOOLCHAIN.md: {sysname}/{machine} has no recorded archive, but the "
-                    f"install script has a branch selecting {chosen[0]} for it"
-                )
-            continue
+    # Exact equality of the branch set, not "the required ones are present". An extra branch is
+    # a platform that has silently stopped being refused, whatever else is in place.
+    extra = sorted(set(cases) - set(DECLARED_PLATFORM_BRANCHES))
+    missing = sorted(set(DECLARED_PLATFORM_BRANCHES) - set(cases))
+    if extra:
+        problems.append(
+            "reports/TOOLCHAIN.md: the install script has branch(es) for platform(s) this "
+            f"repository does not declare: {['/'.join(k) for k in extra]}. Those platforms are no "
+            "longer refused — they now receive some other platform's build. Declare them in "
+            "DECLARED_PLATFORM_BRANCHES with their own archive, or remove the branch."
+        )
+    if missing:
+        problems.append(
+            "reports/TOOLCHAIN.md: the install script has no branch for declared platform(s) "
+            f"{['/'.join(k) for k in missing]}"
+        )
+    for key, expected_asset in DECLARED_PLATFORM_BRANCHES.items():
+        chosen = cases.get(key)
         if chosen is None:
-            problems.append(
-                f"reports/TOOLCHAIN.md: the install script has no branch for {sysname}/{machine}, "
-                "a platform whose archive this repository records"
-            )
             continue
         asset, digest = chosen
         if asset != expected_asset:
             problems.append(
-                f"reports/TOOLCHAIN.md: on {sysname}/{machine} the install script selects "
-                f"{asset}, expected {expected_asset}"
+                f"reports/TOOLCHAIN.md: on {key[0]}/{key[1]} the install script selects {asset}, "
+                f"expected {expected_asset}"
             )
         elif LEAN_RELEASE_DIGESTS.get(asset) != digest:
             problems.append(
-                f"reports/TOOLCHAIN.md: on {sysname}/{machine} the install script pairs {asset} "
+                f"reports/TOOLCHAIN.md: on {key[0]}/{key[1]} the install script pairs {asset} "
                 f"with digest {digest}, the recorded digest is {LEAN_RELEASE_DIGESTS.get(asset)}"
             )
 
@@ -1127,7 +1137,7 @@ def main() -> int:
         f"document claims hold: {len(DECLARED_STRUCTURAL_CHECKS)} structural check(s) on the "
         f"published install script passed (single block, sh -n, CI step labels and command sets "
         f"against all {len(ci_steps)} workflow steps, and the platform-selection block parsed "
-        f"and checked for {len(PLATFORM_CASES)} platforms); "
+        f"and checked for exactly {len(DECLARED_PLATFORM_BRANCHES)} declared branches); "
         f"{len(transcripts)} published transcript(s) matched exactly (one "
         f"block each, in its own section); the build transcript matched on modules "
         f"({len(built_modules)}) and job count ({jobs}); {len(claims)} numeric/pin claim(s) "

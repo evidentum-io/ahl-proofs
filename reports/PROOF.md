@@ -28,7 +28,7 @@ document" below. The four:
   declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
   because nothing was checked. It is a layer on top of the environment audit and never a
   substitute for it.
-* **The regression fixtures** — `scripts/regression_fixtures.py`. 15 fixture runs covering 9
+* **The regression fixtures** — `scripts/regression_fixtures.py`. 19 fixture runs covering 11
   failure modes of this repository, each applied to a throwaway copy of it, each required to fail
   *and* to fail at the layer that owns it, *and* to fail `./scripts/check_axioms.sh` itself with
   the diagnostic that names that layer. This is what keeps the other three honest: a layer that stopped working
@@ -43,14 +43,29 @@ document" below. The four:
   the environment audit can see — is everything that is there.
 
   The second rule alone left a file nobody imports uncompiled and unaudited, with `lake build` and
-  the audit both exiting 0. But three times a Lean file turned out to sit somewhere *no* check
-  looked: under `AhlProofs/` unimported, under `scripts/` in a subdirectory a non-recursive glob
-  missed, and finally in the repository root, where `axiom planted_at_root : False` passed the
-  manifest, the import invariant, the source policy, `lake build` and the whole gate. Each time
-  the fix had been to walk one more directory, which is how a fourth place stays available. The
-  rule is now inverted: a file that belongs to no declared category fails, with its path and what
-  to do about it. There is no directory left to forget, because directories are no longer what is
-  enumerated.
+  the audit both exiting 0. Four times now a Lean file has turned out to sit somewhere *no* check
+  looked: under `AhlProofs/` unimported; under `scripts/` in a subdirectory a non-recursive glob
+  missed; in the repository root, where `axiom planted_at_root : False` passed the manifest, the
+  import invariant, the source policy, `lake build` and the whole gate; and — the same hole
+  arriving from the other side — under `.git/`, `.lake/` or `__pycache__/`, which classification
+  *excluded*, so the file was neither classified nor refused while this layer printed
+  "0 unclassified". Each time the fix had been to walk one more directory, which is how the next
+  place stays available.
+
+  Both directions are closed now. A file that belongs to no declared category fails, with its path
+  and what to do about it; and a `.lean` under one of the three excluded directories is **refused**
+  rather than classified, because none of them holds a Lean source in this project — it takes no
+  dependencies, so Lake never places sources under `.lake/` — and there is therefore no legitimate
+  case to distinguish. The three checks that walk the tree share one definition of that area
+  instead of each keeping a copy, so they cannot drift apart.
+
+  **The exact scope of this guarantee**, stated so it does not read wider than the code: a *Lean
+  file* here is a **regular file whose name ends in exactly `.lean`**. A file whose suffix merely
+  case-folds to that (`Bad.LEAN`) is refused rather than left uncovered, and directory symbolic
+  links anywhere outside `.git/` are refused too, since one would make "this repository's files"
+  depend on something outside the repository. What is *not* covered is a file with Lean content
+  and no `.lean` suffix: nothing here reads file contents to guess a language, and no claim is
+  made that it does.
 
 ### What is checked about this document
 
@@ -93,10 +108,14 @@ if something is not on it, it is not machine-checked, whatever else these docume
      `# --- platform selection` block is **parsed, never executed**: the `case` on
      `"$(uname -s)/$(uname -m)"` is read branch by branch, in one accepted form, and anything
      outside that form fails rather than being run to find out what it does. Each of the four
-     recorded platforms must map to that platform's archive paired with that platform's recorded
-     digest; there must be a `*)` branch that assigns no archive and exits nonzero, so an
-     unrecorded platform is refused rather than handed some other platform's build; and the pair
-     for the runner's platform must be the pair `.github/workflows/ci.yml` installs. This exists
+     branches must be **exactly** the declared set — five, counting `Linux/arm64` as a written-down
+     alias of `Linux/aarch64` — each mapping to its platform's archive paired with that platform's
+     recorded digest. Exactly, because "the recorded platforms are covered" was not enough: an
+     extra `FreeBSD/x86_64)` branch selecting the Linux archive left every required branch and the
+     `*)` default in place and the set of offered archives unchanged, while FreeBSD quietly
+     stopped being refused. There must also be a `*)` branch that assigns no archive and exits
+     nonzero, so an unrecorded platform is refused rather than handed some other platform's build;
+     and the pair for the runner's platform must be the pair `.github/workflows/ci.yml` installs. This exists
      because a constant is exactly what went wrong: the script once hard-wired one platform, so a
      reader on Linux — the platform CI runs on — would have unpacked a macOS build. An earlier
      version of *this check* ran the fragment with a stubbed `uname`, which answered the question
@@ -412,10 +431,11 @@ a library that just finished building — the two conditions cannot both hold.
 
 ### Required regression tests
 
-**15 fixture runs covering 9 failure modes** — nine ways for this pipeline to be wrong; mode 6 is
-exercised twice with a different set of layers active (6 and 6b), mode 7 once per forbidden lexeme
-(7a–7d), because a policy rule that no fixture exercises can be deleted without turning anything
-red, and mode 9 once per place a Lean file has actually turned up uncovered (9a–9c). Each run must make the pipeline exit nonzero **and must be caught by the layer
+**19 fixture runs covering 11 failure modes** — eleven ways for this pipeline to be wrong; mode 6
+is exercised twice with a different set of layers active (6 and 6b), mode 7 once per forbidden
+lexeme (7a–7d), because a policy rule that no fixture exercises can be deleted without turning
+anything red, mode 9 once per place a Lean file has actually turned up unclassified (9a–9c), and
+mode 10 once per directory that classification excludes (10a–10c). Each run must make the pipeline exit nonzero **and must be caught by the layer
 responsible for it** — a fixture that failed for some unrelated reason would satisfy "exits
 nonzero" and prove nothing.
 
@@ -468,24 +488,28 @@ The table below is the runner's own output on the tree this document describes (
 exited 0, `1` = exited nonzero, `-` = not run):
 
 ```
- fixture     layer     build   imports    policy     audit      gate  manifest
-       1   imports         0         1         0         0         1         0   ok
-       2    policy         0         0         1         0         1         0   ok
-       3    policy         0         0         1         0         1         0   ok
-       4     build         1         0         1         -         1         0   ok
-       5     audit         0         0         0         1         1         0   ok
-       6  manifest         0         1         0         0         1         1   ok
-      6b  manifest         0         0         0         0         0         1   ok
-      7a    policy         0         0         1         0         1         0   ok
-      7b    policy         0         0         1         0         1         0   ok
-      7c    policy         0         0         1         0         1         0   ok
-      7d    policy         0         0         1         0         1         0   ok
-       8  manifest         0         0         0         0         0         1   ok
-      9a   imports         0         1         0         0         1         0   ok
-      9b   imports         0         1         0         0         1         0   ok
-      9c   imports         0         1         0         0         1         1   ok
+ fixture     layer     build   imports    policy     audit      gate  manifest      docs
+       1   imports         0         1         0         0         1         0         -   ok
+       2    policy         0         0         1         0         1         0         -   ok
+       3    policy         0         0         1         0         1         0         -   ok
+       4     build         1         0         1         -         1         0         -   ok
+       5     audit         0         0         0         1         1         0         -   ok
+       6  manifest         0         1         0         0         1         1         -   ok
+      6b  manifest         0         0         0         0         0         1         -   ok
+      7a    policy         0         0         1         0         1         0         -   ok
+      7b    policy         0         0         1         0         1         0         -   ok
+      7c    policy         0         0         1         0         1         0         -   ok
+      7d    policy         0         0         1         0         1         0         -   ok
+       8  manifest         0         0         0         0         0         1         -   ok
+      9a   imports         0         1         0         0         1         0         -   ok
+      9b   imports         0         1         0         0         1         0         -   ok
+      9c   imports         0         1         0         0         1         1         -   ok
+     10a   imports         0         1         0         0         1         0         -   ok
+     10b   imports         0         1         0         0         1         0         -   ok
+     10c   imports         0         1         0         0         1         0         -   ok
+      11      docs         0         0         0         0         0         0         1   ok
 
-all 15 fixture run(s) covering 9 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
+all 19 fixture run(s) covering 11 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
 ```
 
 | # | Fragment | Layer under test | Why that layer, and why not another |
@@ -505,6 +529,10 @@ all 15 fixture run(s) covering 9 failure mode(s) behaved as declared: each broke
 | 9a | `Foo.lean` in the repository root, containing `axiom planted_at_root : False` | Lean-file coverage | The case that passed everything: not under `AhlProofs/` so no import invariant looked at it, not under `AhlProofs/` or `scripts/` so the manifest did not hash it, no forbidden lexeme so the policy passed it, not in the build target so `lake build` ignored it, never elaborated so the audit never saw the axiom. Every check walked a chosen directory; none asked whether this file had a home. |
 | 9b | `docs/Notes.lean` | Lean-file coverage | The same failure in a different directory, which is the point: the rule is now "every `.lean` must be classified", not "these directories are walked", so `docs/` needs no special case and neither will the next directory someone creates. |
 | 9c | `scripts/nested/Helper.lean` | Lean-file coverage | Under `scripts/`, where the manifest *does* see it (fixture 8's recursive walk) but where nothing classified it. The manifest goes stale here too, and the fixture asserts both — the coverage rule is what names it, the manifest is what would have noticed the bytes. |
+| 10a | `.git/Bad.lean` | Lean-file coverage | The same class again, arriving through an *exclusion* rather than an omission: classification skipped `.git`, `.lake` and `__pycache__`, so a file there was neither classified nor refused while layer 1 printed "0 unclassified". A `.lean` under any of the three is now refused outright — none of them holds a Lean source in this project, so there is no case to distinguish. |
+| 10b | `.lake/Bad.lean` | Lean-file coverage | Lake's build output. This repository takes no dependencies, so Lake never places sources there; a `.lean` under it is a mistake or a hiding place. |
+| 10c | `__pycache__/Bad.lean` | Lean-file coverage | Python bytecode caches. Same reasoning, and the directory this was first demonstrated in. |
+| 11 | An extra `FreeBSD/x86_64)` branch in the published install script, selecting the Linux archive | document claims | Every required branch and the `*)` default remain, and the set of archives offered is unchanged — which is why the previous version of the platform check passed it. It asked whether the recorded platforms were covered, not whether anything else was, so a platform quietly stopped being refused and started receiving another platform's build. The branch set must now equal the declared one exactly. This is the one fixture whose subject lives in a document rather than in the sources, so it is also the only one that runs `scripts/check_doc_claims.py`. |
 
 For every fixture except 6 and 6b the runner regenerates the manifest inside the copy after
 applying the fixture, so manifest staleness cannot be what fails and the named layer is

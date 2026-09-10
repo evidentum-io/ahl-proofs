@@ -50,7 +50,12 @@ import pathlib
 import re
 import sys
 
-EXCLUDED_DIRS = {".git", ".lake"}
+# One definition of the controlled area, imported rather than repeated. Three scripts walk this
+# tree; when each carried its own copy they drifted — this one excluded `.git` and `.lake` but not
+# `__pycache__`, so a `.lean` there was scanned by the policy and by nothing else. Sharing the
+# constant removes the drift by construction instead of by another check.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from check_imports import EXCLUDED_DIRS, LEAN_SUFFIX  # noqa: E402
 
 # (label, compiled pattern, why it is forbidden). Patterns are `bytes` patterns and run against
 # the whole file, so a `set_option` split across lines is still matched, and a file that is not
@@ -121,8 +126,9 @@ def validate_rules() -> list[str]:
 
 def discover(root: pathlib.Path) -> list[pathlib.Path]:
     return sorted(
-        p for p in root.rglob("*.lean")
-        if p.is_file() and not (EXCLUDED_DIRS & set(p.relative_to(root).parts))
+        p for p in root.rglob("*" + LEAN_SUFFIX)
+        if p.is_file() and not p.is_symlink()
+        and not (EXCLUDED_DIRS & set(p.relative_to(root).parts))
     )
 
 

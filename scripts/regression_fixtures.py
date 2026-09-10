@@ -68,7 +68,9 @@ import subprocess
 import sys
 import tempfile
 
-EXCLUDED = {".git", ".lake", "__pycache__"}
+# One definition of the controlled area, shared with the two checks that walk the same tree.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from check_imports import EXCLUDED_DIRS as EXCLUDED  # noqa: E402
 
 MODEL = "AhlProofs/Model.lean"
 ROOT_MODULE_FILE = "AhlProofs.lean"
@@ -182,6 +184,30 @@ def fixture_8(root: pathlib.Path) -> None:
     (nested / "helper.sh").write_text("#!/bin/sh\n: nested audit helper\n", encoding="utf-8")
 
 
+def extra_platform_branch(root: pathlib.Path) -> None:
+    """An additional platform branch in the published install script.
+
+    Every required branch and the `*)` default stay in place, and the set of archives offered is
+    unchanged — which is exactly why this passed before: the check asked whether the recorded
+    platforms were covered, not whether anything else was. From here on FreeBSD/x86_64 is no
+    longer refused; it silently receives a Linux build.
+    """
+    doc = root / "reports" / "TOOLCHAIN.md"
+    t = doc.read_text(encoding="utf-8")
+    anchor = "  Linux/x86_64)\n"
+    assert t.count(anchor) == 1, "the install script no longer has the branch to anchor to"
+    doc.write_text(
+        t.replace(
+            anchor,
+            "  FreeBSD/x86_64)\n"
+            "    ASSET=lean-4.31.0-linux.tar.zst\n"
+            "    DIGEST=07a633cc8d9151cbc08825ea4cdda50d4b02a2c9cb852c0131b13046f49cad7f\n"
+            "    ;;\n" + anchor,
+        ),
+        encoding="utf-8",
+    )
+
+
 def stray_lean(rel: str, body: str):
     """A `.lean` file in a place no declared category covers.
 
@@ -218,7 +244,7 @@ FIXTURES = [
         "title": "module outside the root module's import list",
         "apply": fixture_1,
         "regen_manifest": True,
-        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1, "manifest": 0},
+        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1, "manifest": 0, "docs": None},
         "layer": "imports",
         "reason": "is not reachable by imports from AhlProofs.lean",
         "gate_reason": GATE_IMPORTS,
@@ -229,7 +255,7 @@ FIXTURES = [
         "title": "declaration storing no constant, under a locally relaxed build setting",
         "apply": fixture_2,
         "regen_manifest": True,
-        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 0, "gate": 1, "manifest": 0},
+        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 0, "gate": 1, "manifest": 0, "docs": None},
         "layer": "policy",
         "reason": f"forbidden lexeme `{WARN_OFF}`",
         "gate_reason": GATE_POLICY,
@@ -240,7 +266,7 @@ FIXTURES = [
         "title": "kernel re-typechecking locally disabled",
         "apply": fixture_3,
         "regen_manifest": True,
-        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 0, "gate": 1, "manifest": 0},
+        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 0, "gate": 1, "manifest": 0, "docs": None},
         "layer": "policy",
         "reason": f"forbidden lexeme `{SKIP_TC}`",
         "gate_reason": GATE_POLICY,
@@ -252,7 +278,7 @@ FIXTURES = [
         "apply": fixture_4,
         "regen_manifest": True,
         "expect": {"build": 1, "imports": 0, "policy": 1, "audit": None, "gate": 1,
-                   "manifest": 0},
+                   "manifest": 0, "docs": None},
         "layer": "build",
         "reason": "declaration uses",
         "gate_reason": GATE_POLICY,
@@ -263,7 +289,7 @@ FIXTURES = [
         "title": "own axiom at top level",
         "apply": fixture_5,
         "regen_manifest": True,
-        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 1, "gate": 1, "manifest": 0},
+        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 1, "gate": 1, "manifest": 0, "docs": None},
         "layer": "audit",
         "reason": "own axiom declaration(s)",
         "gate_reason": GATE_AUDIT,
@@ -274,7 +300,7 @@ FIXTURES = [
         "title": "new file under AhlProofs/, manifest left stale",
         "apply": fixture_6,
         "regen_manifest": False,
-        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1, "manifest": 1},
+        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1, "manifest": 1, "docs": None},
         "layer": "manifest",
         "reason": "reports/PROOF.sha256 is stale",
         "gate_reason": GATE_IMPORTS,
@@ -285,7 +311,7 @@ FIXTURES = [
         "title": "same file, imported — isolating the manifest layer from the import invariant",
         "apply": fixture_6b,
         "regen_manifest": False,
-        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 1},
+        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 1, "docs": None},
         "layer": "manifest",
         "reason": "reports/PROOF.sha256 is stale",
         # The gate passes here, and must: the hash manifest is checked by CI as its own step and
@@ -300,7 +326,7 @@ FIXTURES = [
         "title": f"forbidden lexeme `{lexeme}` in a Lean comment",
         "apply": comment_lexeme(lexeme),
         "regen_manifest": True,
-        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 0, "gate": 1, "manifest": 0},
+        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 0, "gate": 1, "manifest": 0, "docs": None},
         "layer": "policy",
         "reason": f"forbidden lexeme `{lexeme}`",
         "gate_reason": GATE_POLICY,
@@ -313,7 +339,7 @@ FIXTURES = [
         "title": "audit tooling in a scripts/ subdirectory, manifest left stale",
         "apply": fixture_8,
         "regen_manifest": False,
-        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 1},
+        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 1, "docs": None},
         "layer": "manifest",
         "reason": [
             "reports/PROOF.sha256 is stale",
@@ -331,7 +357,7 @@ FIXTURES = [
         "apply": stray_lean(rel, body),
         "regen_manifest": False,
         "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1,
-                   "manifest": manifest},
+                   "manifest": manifest, "docs": None},
         "layer": "imports",
         "reason": [rel, "belongs to no declared category"],
         "gate_reason": GATE_IMPORTS,
@@ -345,6 +371,35 @@ FIXTURES = [
         # it — so the manifest goes stale as well, and both layers are asserted.
         ("c", "scripts/nested/Helper.lean", "-- nested Lean helper\n", 1),
     ]
+] + [
+    {
+        "id": f"10{suffix}",
+        "mode": "10",
+        "title": f"Lean file under {directory}/, a directory excluded from classification",
+        "apply": stray_lean(f"{directory}/Bad.lean", "axiom hidden_from_coverage : False\n"),
+        "regen_manifest": False,
+        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1, "manifest": 0,
+                   "docs": None},
+        "layer": "imports",
+        "reason": [f"{directory}/Bad.lean", "holds no Lean source in this project"],
+        "gate_reason": GATE_IMPORTS,
+    }
+    for suffix, directory in [("a", ".git"), ("b", ".lake"), ("c", "__pycache__")]
+] + [
+    {
+        "id": "11",
+        "mode": "11",
+        "title": "an extra platform branch in the published install script",
+        "apply": extra_platform_branch,
+        "regen_manifest": False,
+        # Nothing in the sources changes, so every source-side stage passes and the manifest — which
+        # does not hash the prose documents — is current. Only the document check can see this.
+        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 0,
+                   "docs": 1},
+        "layer": "docs",
+        "reason": ["FreeBSD/x86_64", "no longer refused"],
+        "gate_reason": "",
+    },
 ]
 
 # `gate` is `./scripts/check_axioms.sh` itself, run on the corrupted copy. It is not a fourth
@@ -353,7 +408,11 @@ FIXTURES = [
 # `$?`, a stray `|| true`, a reordered `if` — would leave every individual stage reporting exactly
 # what it reports now while CI went green on a broken tree. Fixtures that assert the individual
 # stages prove the layers work; this stage proves the pipeline the documents actually name does.
-STAGES = ["build", "imports", "policy", "audit", "gate", "manifest"]
+# `docs` is scripts/check_doc_claims.py. It is declared `None` — not run — for every fixture but
+# the one whose subject lives in a document rather than in the sources, because it rebuilds the
+# library and re-runs the gate, and paying that per fixture would triple the suite for no
+# information.
+STAGES = ["build", "imports", "policy", "audit", "gate", "manifest", "docs"]
 
 # The roster this runner is required to execute, declared separately from the fixtures themselves
 # and checked against them before anything runs.
@@ -371,8 +430,8 @@ STAGES = ["build", "imports", "policy", "audit", "gate", "manifest"]
 # published in reports/PROOF.md, so the same edit has to be made in three places, in one commit,
 # to go unnoticed. See "Trust boundary" in reports/PROOF.md.
 DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b", "7a", "7b", "7c", "7d", "8",
-                 "9a", "9b", "9c")
-DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9")
+                 "9a", "9b", "9c", "10a", "10b", "10c", "11")
+DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11")
 REQUIRED_KEYS = {
     "id", "mode", "title", "apply", "regen_manifest", "expect", "layer", "reason", "gate_reason",
 }
@@ -448,6 +507,7 @@ COMMANDS = {
     "policy": [sys.executable, "scripts/check_source_policy.py"],
     "audit": ["lake", "env", "lean", "scripts/Audit.lean"],
     "manifest": [sys.executable, "scripts/gen_proof_sha256.py", "--check"],
+    "docs": [sys.executable, "scripts/check_doc_claims.py"],
 }
 
 
@@ -631,6 +691,16 @@ def main() -> int:
     before = snapshot(root)
     if not before:
         print(f"FAIL: nothing found under {root}", file=sys.stderr)
+        return 1
+
+    # Fixtures that deliberately leave the manifest alone inherit whatever state the working tree
+    # is in. If the baseline is already stale, their `manifest` stage fails for a reason that has
+    # nothing to do with the fixture, and the run reports six confusing failures instead of one
+    # clear one. Refuse to start rather than produce that.
+    rc, out = run([sys.executable, "scripts/gen_proof_sha256.py", "--check"], root)
+    if rc != 0:
+        print("regression_fixtures.py: FAIL — the working tree's own manifest is stale, so "
+              "fixture results would not be about the fixtures:\n" + out.strip(), file=sys.stderr)
         return 1
 
     rows: list[tuple[str, str, dict, bool]] = []
