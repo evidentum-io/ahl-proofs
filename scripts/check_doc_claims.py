@@ -343,51 +343,224 @@ LABEL_RE = re.compile(r"^#\s*CI steps?\s+(\d+)(?:\s*-\s*(\d+))?\s*\[([^\]]*)\]\s
 # would be either brittle or meaningless; comparing this vocabulary caught a real divergence —
 # `lake --version` present in CI's self-report step and absent from the published script — that
 # label-only comparison could not see.
-# `_CMD` requires the word to stand where a command stands — at the start of a line, or after a
-# pipe, `;`, `&&` or an opening `$(`, optionally behind `time`. Without it `tar` matches inside
-# `lean-4.31.0-linux.tar.zst` and the comparison reports a difference that is not one; without the
-# `time` allowance, CI's `time lake build` is not recognised as `lake build`.
-_CMD = r"(?:^|[|;&(])[ \t]*(?:time[ \t]+)?"
-COMMAND_PATTERNS = [
-    (re.compile(_CMD + r"python3\s+(scripts/[\w./-]+\.py)", re.M), r"python3 \1"),
-    (re.compile(_CMD + r"(?:\./)?(scripts/[\w./-]+\.sh)\b", re.M), r"./\1"),
-    (re.compile(_CMD + r"lake\s+(clean|build|env|--version)\b", re.M), r"lake \1"),
-    (re.compile(_CMD + r"lean\s+--version\b", re.M), "lean --version"),
-    (re.compile(_CMD + r"curl\b", re.M), "curl"),
-    (re.compile(_CMD + r"(?:sha256sum|shasum)\b[^\n]*?\s-c\b", re.M), "sha256 -c"),
-    (re.compile(_CMD + r"tar\b", re.M), "tar"),
-    (re.compile(_CMD + r"find\b", re.M), "find"),
-]
+# ---------------------------------------------------------------------------------------------
+# Command comparison between a workflow step and the script block that mirrors it.
+#
+# The rule is inverted, the way the coverage rule was inverted: **every** command in command
+# position is compared, and only what is declared below as indifferent is dropped. The previous
+# version compared a vocabulary of commands it recognised, which meant anything it did not
+# recognise was silently equal — so `node evil.js` or `python3 -c '...'`, appended to the `run:` of
+# a step that already existed, changed no compared set and passed. A new *step* was caught by the
+# label check and a new *file* by the coverage rule; a new command inside an old step was caught
+# by nothing.
+#
+# The price is real and accepted: `echo`, `mkdir` and friends now have to be named. Naming them is
+# the point — an explicit list of what is considered indifferent can be read and argued with,
+# where "everything unfamiliar is fine" cannot.
 
-# Anti-vacuity for the vocabulary above: these must all turn up somewhere in the workflow, or the
-# comparison is running over a vocabulary that no longer recognises this repository's own checks.
-DECLARED_COMMANDS = (
-    "python3 scripts/gen_proof_sha256.py",
-    "python3 scripts/check_imports.py",
-    "python3 scripts/check_source_policy.py",
-    "python3 scripts/regression_fixtures.py",
-    "python3 scripts/check_doc_claims.py",
-    "./scripts/check_axioms.sh",
-    "lake build",
-    "lean --version",
+# Shell syntax, not commands. Words that open or close a construct.
+SHELL_KEYWORDS = frozenset({
+    "if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done",
+    "case", "esac", "in", "function", "select", ";;", "{", "}", "!",
+})
+
+# Declared indifferent: shell builtins and utilities that neither execute anything from this
+# repository nor fetch anything from outside it. Each is here because its presence or absence
+# cannot change what a step verifies. `eval`, `sh`, `bash`, `python3`, `node` and anything else
+# that can run code are deliberately **not** on this list.
+# Kept to what actually occurs: an entry that never fires is a place something could hide later,
+# so the checker reports unused entries and this list is pruned to match rather than padded
+# against hypothetical future need. Adding a command here is a deliberate, reviewable act.
+IGNORED_COMMANDS = frozenset({
+    # shell builtins that change no file and run nothing from this repository
+    "set", "echo", "cd", "export", "exit", "trap", "command",
+    # file and path utilities whose presence cannot change what a step verifies
+    "mkdir", "rm", "mv", "dirname", "mktemp", "tr",
+    # an inert query about the host
+    "uname",
+})
+
+# Prefixes that stand in front of a command without being one.
+COMMAND_PREFIXES = frozenset({"time", "exec", "nohup", "env"})
+
+# Commands that may never be declared indifferent, whatever else changes.
+#
+# An earlier attempt guarded the ignore list by requiring it to be disjoint from what is compared
+# — which cannot fire, because anything named in the ignore list is by construction absent from
+# the compared set. This is the check that can: moving `curl`, `node` or `eval` into
+# IGNORED_COMMANDS fails outright. It is a **denylist and therefore not complete** — an
+# interpreter nobody thought of could still be declared indifferent — but it names the ways code
+# and network reach actually enter a step here, and it turns the most likely mistake into a red
+# run instead of a quiet one.
+NEVER_IGNORABLE = frozenset({
+    "eval", "source", ".", "sh", "bash", "zsh", "dash", "ksh",
+    "python", "python3", "node", "ruby", "perl", "php", "deno", "bun",
+    "curl", "wget", "nc", "ncat", "ssh", "scp", "rsync", "git",
+    "lake", "lean", "elan", "make", "cmake", "docker", "npm", "npx", "pip", "pip3",
+    "sha256sum", "shasum", "tar", "unzip", "find", "xargs",
+})
+
+# Declared spelling equivalences: two commands that do the same job under different names on
+# different systems, normalised so that a legitimate portability branch is not read as a
+# divergence. `shasum -a 256 -c` is macOS's spelling of GNU `sha256sum -c`; the install script
+# offers both because a reader may be on either, while CI is always Linux.
+COMMAND_NORMALISATIONS = (
+    (re.compile(r"^(?:sha256sum|shasum)\b(?=.*\s-c\b)"), "sha256sum -c"),
 )
+
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_FLAG = re.compile(r"^--?[A-Za-z0-9][\w-]*$")
+_SCRIPT_PATH = re.compile(r"^\.?/?scripts/[\w./-]+$")
+_BARE_WORD = re.compile(r"^[a-z][a-z0-9._-]*$")
+_CASE_OPEN = re.compile(r"^case\b.*\bin$")
+_CASE_PATTERN = re.compile(r"^[^;]*\)\s*(?:;;)?$")
+
+
+def _command_positions(line: str) -> list[str]:
+    """Split a shell line into the pieces that begin at a command position.
+
+    Quote-aware, because a naive split produced segments starting mid-string: `|` and `(` inside a
+    quoted message are text, not separators. A `$(…)` or backtick substitution *is* a command
+    position, and its body is scanned with the surrounding quoting suspended; what follows the
+    closing `)` continues the word it was part of and is **not** a command position, which is why
+    the pieces carry that flag rather than all being treated alike.
+    """
+    pieces: list[str] = []
+    cur: list[str] = []
+    is_cmd = True
+    stack: list[bool] = []
+    sq = dq = False
+    i, n = 0, len(line)
+
+    def flush(next_is_cmd: bool) -> None:
+        nonlocal cur, is_cmd
+        if is_cmd:
+            pieces.append("".join(cur))
+        cur = []
+        is_cmd = next_is_cmd
+
+    while i < n:
+        c = line[i]
+        if sq:
+            cur.append(c)
+            sq = c != "'"
+            i += 1
+            continue
+        if c == "'" and not dq:
+            sq = True
+            cur.append(c)
+            i += 1
+            continue
+        if c == '"':
+            dq = not dq
+            cur.append(c)
+            i += 1
+            continue
+        if line.startswith("$(", i):
+            flush(True)
+            stack.append(dq)
+            dq = False
+            i += 2
+            continue
+        if c == "`":
+            flush(True)
+            stack.append(dq)
+            dq = False
+            i += 1
+            continue
+        if c == ")" and stack and not dq:
+            flush(False)
+            dq = stack.pop()
+            i += 1
+            continue
+        if not dq:
+            if c == "#" and (not cur or cur[-1].isspace()):
+                break                      # a trailing comment ends the line
+            if line.startswith("&&", i) or line.startswith("||", i):
+                flush(True)
+                i += 2
+                continue
+            if c == "&" and ((cur and cur[-1] == ">") or line.startswith("&>", i)):
+                cur.append(c)          # `2>&1`, `&>file`: redirection, not a separator
+                i += 1
+                continue
+            if c in "|;&(":
+                flush(True)
+                i += 1
+                continue
+            if c == ")":
+                flush(False)
+                i += 1
+                continue
+        cur.append(c)
+        i += 1
+    flush(True)
+    return pieces
+
+
+
+def command_scan(text: str) -> tuple[set[str], set[str]]:
+    """Return (commands compared, ignored commands actually seen).
+
+    Command position means: the start of a line, or immediately after `|`, `;`, `&`, `(`, `$(` or
+    a backtick, optionally behind one of COMMAND_PREFIXES. Full-line comments are dropped first;
+    `case` patterns are recognised and skipped as syntax, and a leading `NAME=value` is an
+    assignment rather than a command.
+    """
+    compared: set[str] = set()
+    ignored_seen: set[str] = set()
+    in_case = False
+    # A command split across lines with a trailing backslash is one command; without joining, the
+    # continuation line looks like a fresh command position and its first word — a URL, say — is
+    # read as a command name.
+    joined_lines: list[str] = []
+    for raw in text.splitlines():
+        if joined_lines and joined_lines[-1].endswith("\\"):
+            joined_lines[-1] = joined_lines[-1][:-1].rstrip() + " " + raw.strip()
+        else:
+            joined_lines.append(raw)
+    for raw in joined_lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if _CASE_OPEN.match(line):
+            in_case = True
+        elif line == "esac":
+            in_case = False
+        if in_case and _CASE_PATTERN.match(line) and not line.startswith("case"):
+            continue
+        for piece in _command_positions(line):
+            words = piece.split()
+            while words and words[0] in COMMAND_PREFIXES:
+                words = words[1:]
+            if not words:
+                continue
+            head = words[0]
+            if head in SHELL_KEYWORDS or _ASSIGNMENT.match(head) or head.endswith(")"):
+                continue
+            if head in IGNORED_COMMANDS:
+                ignored_seen.add(head)
+                continue
+            joined = " ".join(words)
+            normalised = None
+            for pattern, replacement in COMMAND_NORMALISATIONS:
+                if pattern.search(joined):
+                    normalised = replacement
+                    break
+            if normalised is not None:
+                compared.add(normalised)
+                continue
+            arg = words[1] if len(words) > 1 else ""
+            if _FLAG.match(arg) or _SCRIPT_PATH.match(arg) or _BARE_WORD.match(arg):
+                compared.add(f"{head} {arg}")
+            else:
+                compared.add(head)
+    return compared, ignored_seen
 
 
 def commands_in(text: str) -> list[str]:
-    """The declared-vocabulary commands appearing in a chunk of shell, sorted and deduplicated.
-
-    Full-line comments are dropped first, so prose about a command is not mistaken for the
-    command. A trailing comment on a command line is not stripped — it sits beside an invocation
-    that is being counted anyway.
-    """
-    body = "\n".join(
-        line for line in text.splitlines() if not line.strip().startswith("#")
-    )
-    found = set()
-    for pattern, replacement in COMMAND_PATTERNS:
-        for m in pattern.finditer(body):
-            found.add(m.expand(replacement) if "\\" in str(replacement) else replacement)
-    return sorted(found)
+    """The compared commands of a chunk of shell, sorted."""
+    return sorted(command_scan(text)[0])
 
 
 def extract_install_script(doc: str, problems: list[str]) -> str | None:
@@ -518,13 +691,41 @@ def check_install_script_labels(script: str, ci_steps: list[dict], problems: lis
                 f"      only in script:   {sorted(set(in_script) - set(in_ci))}"
             )
 
-    all_ci_commands = {c for s in ci_steps for c in commands_in(s["run"])}
-    absent = [c for c in DECLARED_COMMANDS if c not in all_ci_commands]
-    if absent:
+    # Anti-vacuity for the comparison itself. Under the inverted rule the danger is no longer a
+    # vocabulary that recognises nothing but an ignore list that swallows everything.
+    all_ci_commands: set[str] = set()
+    all_ignored_seen: set[str] = set()
+    for s in ci_steps:
+        seen_cmds, seen_ignored = command_scan(s["run"])
+        all_ci_commands |= seen_cmds
+        all_ignored_seen |= seen_ignored
+    script_cmds, script_ignored = command_scan(script)
+    all_ignored_seen |= script_ignored
+
+    if not IGNORED_COMMANDS:
+        problems.append("IGNORED_COMMANDS is empty — a declared list that names nothing")
+    if not all_ci_commands:
         problems.append(
-            f"the command vocabulary no longer recognises {absent} anywhere in {WORKFLOW} — "
-            "comparing command sets under a vocabulary that matches nothing would compare "
-            "empty sets and pass"
+            f"no command at all was recognised in {WORKFLOW} — either the workflow runs nothing "
+            "or the scanner has stopped seeing commands, and either way comparing empty sets "
+            "would pass"
+        )
+    forbidden_ignores = sorted(IGNORED_COMMANDS & NEVER_IGNORABLE)
+    if forbidden_ignores:
+        problems.append(
+            f"command(s) {forbidden_ignores} are declared indifferent but appear in "
+            "NEVER_IGNORABLE: each of them runs code or reaches the network, so dropping it from "
+            "the comparison would hide exactly what the comparison is for"
+        )
+    unused_ignores = sorted(IGNORED_COMMANDS - all_ignored_seen)
+    if unused_ignores:
+        print(
+            "check_doc_claims.py: note — declared indifferent but never seen: "
+            + ", ".join(unused_ignores)
+            + ". Each is a command this comparison would drop if it appeared; none of them "
+            "appears today. Prune what is not needed rather than letting the list grow into a "
+            "place things can hide.",
+            file=sys.stderr,
         )
 
     rows, mismatched = [], False

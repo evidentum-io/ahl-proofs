@@ -42,7 +42,11 @@ import re
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from gen_proof_sha256 import Degenerate, discover as manifest_discover  # noqa: E402
+from gen_proof_sha256 import (  # noqa: E402
+    FIXED_FILES as manifest_fixed_files,
+    Degenerate,
+    discover as manifest_discover,
+)
 
 LIBRARY_DIR = "AhlProofs"
 ROOT_MODULE = "AhlProofs"
@@ -108,6 +112,26 @@ YAML_SUFFIXES = {".yml", ".yaml"}
 COVERED_SUFFIXES = {LEAN_SUFFIX} | SCRIPT_SUFFIXES | YAML_SUFFIXES
 SCRIPT_DIR = "scripts"
 DECLARED_YAML = (".github/workflows/ci.yml",)
+
+# The build and pin files that must be hashed. These carry no covered suffix — `.toml`, `.json`,
+# and a file with no extension at all — so the suffix rule above says nothing about them, and
+# until now the only thing protecting them was a list inside the very script that would be edited
+# to drop one: removing `lake-manifest.json` from `FIXED_FILES` produced a shorter manifest and a
+# green run.
+#
+# **This list is declared, not derived, and that is worth saying plainly.** I looked for a
+# constructive source and there is none to hand: Lake exposes no command that enumerates the files
+# it reads, and "whatever is in the repository root" would sweep in prose and the licence. What
+# can be done is to make one place unable to change quietly, and that is done below —
+# `gen_proof_sha256.FIXED_FILES` must equal exactly this list plus the root module plus
+# DECLARED_YAML, so dropping an entry from either file is a failure rather than a shorter,
+# passing manifest. Two agreeing edits instead of one; the same bar as every other roster here,
+# and the same limit (see "Trust boundary" in reports/PROOF.md).
+#
+# One thing *is* constructive: Lake reads `lakefile.toml` **or** `lakefile.lean`, and the latter
+# is a `.lean` in the repository root, which the coverage rule above already refuses as
+# unclassified. So the build cannot be driven from a file this rule does not see.
+DECLARED_BUILD_FILES = ("lean-toolchain", "lakefile.toml", "lake-manifest.json")
 
 # Every `.lean` file in this repository that is **not** part of the proof library, declared one by
 # one. Nothing else may exist.
@@ -336,6 +360,29 @@ def main() -> int:
             problems.append(
                 f"no {suffix} file found under {SCRIPT_DIR}/ — this category is declared and must "
                 "not be empty; an empty category checks nothing while appearing to"
+            )
+
+    # The manifest's own mandatory list must be exactly what is declared here. Neither file can
+    # shorten it alone.
+    expected_fixed = set(DECLARED_BUILD_FILES) | {ROOT_FILE} | set(DECLARED_YAML)
+    actual_fixed = set(manifest_fixed_files)
+    if actual_fixed != expected_fixed:
+        dropped = sorted(expected_fixed - actual_fixed)
+        added = sorted(actual_fixed - expected_fixed)
+        problems.append(
+            "scripts/gen_proof_sha256.py's FIXED_FILES is not the declared set of files that must "
+            f"be hashed: missing {dropped}, unexpected {added}. These files carry no covered "
+            "suffix, so nothing else notices when one stops being hashed; the two lists must "
+            "agree."
+        )
+    if not DECLARED_BUILD_FILES:
+        problems.append("DECLARED_BUILD_FILES is empty — a declared category that names nothing")
+    for rel in sorted(DECLARED_BUILD_FILES):
+        if not (root / rel).is_file():
+            problems.append(f"{rel} is declared as a build/pin file but does not exist")
+        elif rel not in manifest_rels:
+            problems.append(
+                f"{rel} is a declared build/pin file but is not covered by reports/PROOF.sha256"
             )
 
     declared_yaml = set(DECLARED_YAML)

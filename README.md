@@ -104,7 +104,7 @@ The gate is `./scripts/check_axioms.sh`, three layers in order:
    checked here against every constant on every run, at a finer grain than the 102 named
    theorems, and it still holds exactly.
 
-**22 fixture runs covering 12 failure modes** — an unimported module, an `example` under a locally
+**24 fixture runs covering 14 failure modes** — an unimported module, an `example` under a locally
 relaxed `warningAsError`, a locally skipped kernel typecheck, an unfinished theorem, a top-level
 `axiom`, a new file left out of the hash manifest (run twice, with and without its `import` line,
 to show the manifest layer works independently of the import invariant), a forbidden lexeme in the
@@ -118,15 +118,15 @@ stopped propagating an exit status is caught too. It also validates its own rost
 starting, so a truncated or emptied fixture list fails instead of reporting success over nothing.
 The working tree is never written to, and the runner hashes every file under it except `.git/`,
 `.lake/` and `__pycache__/` before and after to prove it. `reports/PROOF.md`, "Required regression
-tests", lists all 22 runs with the exit status of every stage.
+tests", lists all 24 runs with the exit status of every stage.
 
 A defined list of claims in this file, in `reports/PROOF.md` and in `reports/TOOLCHAIN.md` is
 itself checked in CI by `scripts/check_doc_claims.py`: four published transcripts, the counts, the
 toolchain pin and all four release-archive digests, the fixture roster, and the install script
 `reports/TOOLCHAIN.md` publishes — which must be a single block that passes `sh -n`, whose
 `# CI step N [key].` labels must cover the workflow's steps once each, in order, whose commands
-must match those of the steps they mirror (over a declared vocabulary, not full shell
-equivalence), and whose platform-selection block is parsed — never executed — to confirm it picks
+must match those of the steps they mirror — every command in command position, minus a short
+declared list of indifferent ones, so a command appended to an existing step is caught — and whose platform-selection block is parsed — never executed — to confirm it picks
 each recorded platform's archive and digest and refuses an unrecorded platform. `.github/workflows/ci.yml` is
 the source of truth for the step order and is read structurally, by a dependency-free reader that
 rejects anything outside the shape it understands rather than guessing. That list is

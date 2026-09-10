@@ -184,6 +184,39 @@ def fixture_8(root: pathlib.Path) -> None:
     (nested / "helper.sh").write_text("#!/bin/sh\n: nested audit helper\n", encoding="utf-8")
 
 
+def extra_command_in_existing_step(root: pathlib.Path) -> None:
+    """A command appended to the `run:` of a workflow step that already exists.
+
+    No new step, so the label check sees the same eleven; no new file, so the coverage rule sees
+    nothing; and under the old vocabulary comparison `node` was simply a word nobody recognised,
+    which made the two command sets equal and the run green.
+    """
+    wf = root / ".github" / "workflows" / "ci.yml"
+    t = wf.read_text(encoding="utf-8")
+    anchor = "        run: python3 scripts/check_imports.py\n"
+    assert t.count(anchor) == 1, "the workflow no longer has the step to anchor to"
+    wf.write_text(
+        t.replace(anchor, "        run: |\n"
+                          "          python3 scripts/check_imports.py\n"
+                          "          node /tmp/whatever.js\n"),
+        encoding="utf-8",
+    )
+
+
+def drop_fixed_file(root: pathlib.Path) -> None:
+    """An entry removed from the hash manifest's mandatory list.
+
+    `lake-manifest.json` carries none of the covered suffixes, so the coverage rule says nothing
+    about it; before the two lists had to agree, dropping it here produced a shorter manifest and
+    a green run.
+    """
+    gen = root / "scripts" / "gen_proof_sha256.py"
+    t = gen.read_text(encoding="utf-8")
+    anchor = '    "lake-manifest.json",\n'
+    assert t.count(anchor) == 1, "gen_proof_sha256.py no longer lists lake-manifest.json"
+    gen.write_text(t.replace(anchor, ""), encoding="utf-8")
+
+
 def extra_platform_branch(root: pathlib.Path) -> None:
     """An additional platform branch in the published install script.
 
@@ -405,6 +438,30 @@ FIXTURES = [
     ]
 ] + [
     {
+        "id": "13",
+        "mode": "13",
+        "title": "a command appended to an existing workflow step's run:",
+        "apply": extra_command_in_existing_step,
+        "regen_manifest": True,
+        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 0,
+                   "docs": 1},
+        "layer": "docs",
+        "reason": ["CI step 3", "node"],
+        "gate_reason": "",
+    },
+    {
+        "id": "14",
+        "mode": "14",
+        "title": "an entry removed from the manifest's mandatory file list",
+        "apply": drop_fixed_file,
+        "regen_manifest": True,
+        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1, "manifest": 0,
+                   "docs": None},
+        "layer": "imports",
+        "reason": ["FIXED_FILES is not the declared set", "lake-manifest.json"],
+        "gate_reason": GATE_IMPORTS,
+    },
+    {
         "id": "11",
         "mode": "11",
         "title": "an extra platform branch in the published install script",
@@ -448,8 +505,8 @@ STAGES = ["build", "imports", "policy", "audit", "gate", "manifest", "docs"]
 # published in reports/PROOF.md, so the same edit has to be made in three places, in one commit,
 # to go unnoticed. See "Trust boundary" in reports/PROOF.md.
 DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b", "7a", "7b", "7c", "7d", "8",
-                 "9a", "9b", "9c", "10a", "10b", "10c", "12a", "12b", "12c", "11")
-DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12")
+                 "9a", "9b", "9c", "10a", "10b", "10c", "12a", "12b", "12c", "13", "14", "11")
+DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14")
 REQUIRED_KEYS = {
     "id", "mode", "title", "apply", "regen_manifest", "expect", "layer", "reason", "gate_reason",
 }

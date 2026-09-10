@@ -28,7 +28,7 @@ document" below. The four:
   declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
   because nothing was checked. It is a layer on top of the environment audit and never a
   substitute for it.
-* **The regression fixtures** — `scripts/regression_fixtures.py`. 22 fixture runs covering 12
+* **The regression fixtures** — `scripts/regression_fixtures.py`. 24 fixture runs covering 14
   failure modes of this repository, each applied to a throwaway copy of it, each required to fail
   *and* to fail at the layer that owns it, *and* to fail `./scripts/check_axioms.sh` itself with
   the diagnostic that names that layer. This is what keeps the other three honest: a layer that stopped working
@@ -45,6 +45,17 @@ document" below. The four:
   | `.lean` | a library module (`AhlProofs.lean` or a file under `AhlProofs/`), or a file named in `DECLARED_AUXILIARY` |
   | `.py`, `.sh` | tooling under `scripts/`, at any depth |
   | `.yml`, `.yaml` | a file named in `DECLARED_YAML` |
+
+  Alongside it, `DECLARED_BUILD_FILES` names the build and pin files — `lean-toolchain`,
+  `lakefile.toml`, `lake-manifest.json` — which carry no covered suffix and so fall outside the
+  table above. `scripts/gen_proof_sha256.py`'s own mandatory list must equal that set plus the
+  root module plus `DECLARED_YAML`, exactly; dropping an entry from either file is a failure
+  rather than a shorter, passing manifest. **That set is declared, not derived**, and the reason
+  is worth stating: Lake exposes no command that enumerates what it reads, and "everything in the
+  repository root" would sweep in the prose and the licence. What is constructive is only this —
+  Lake reads `lakefile.toml` or `lakefile.lean`, and the second is a `.lean` in the root, which
+  the coverage rule already refuses as unclassified, so the build cannot be driven from a file the
+  rule does not see.
 
   And every library module must be reachable by imports from the root module, so that what was
   built — and therefore what the environment audit can see — is everything that is there.
@@ -145,12 +156,21 @@ if something is not on it, it is not machine-checked, whatever else these docume
      stricter and free of that.
    * **The commands in each labelled block match the workflow step it mirrors.** For every label,
      the set of commands in the block under it must equal the set in the workflow steps it covers.
-     *This is a declared vocabulary, not shell equivalence*: `python3 scripts/*.py`,
-     `./scripts/*.sh`, `lake clean|build|env|--version`, `lean --version`, `curl`, a `sha256`
-     comparison, `tar`, `find`. Everything else — `echo`, `mkdir`, `mv`, control flow, variable
-     assignments — is ignored, and two blocks with identical vocabularies can still differ in what
-     they do. It is here because label-only comparison missed a real divergence: `lake --version`
-     ran in CI's self-report step and not in the published script, and nothing said so.
+     **Every** command in command position is compared; only what `IGNORED_COMMANDS` declares
+     indifferent is dropped, and that list is short, named one by one, kept pruned to what
+     actually occurs (the checker reports entries that never fire), and forbidden from naming
+     anything in `NEVER_IGNORABLE` — the interpreters, fetchers and build tools through which code
+     and network reach actually enter a step. That last guard is a **denylist and not complete**:
+     an interpreter nobody listed could still be declared indifferent. It replaced an earlier
+     guard that required the ignore list to be disjoint from the compared set, which could never
+     fire, since anything named in the ignore list is by construction absent from that set. The earlier version had this backwards — it compared a vocabulary of
+     commands it recognised, so anything unfamiliar was silently equal and `node evil.js` appended
+     to an existing step's `run:` changed no set and passed. Two things are still *not*
+     established: shell equivalence, since arguments are compared only when they are flags,
+     subcommands or `scripts/` paths, and semantics, since two blocks running the same commands on
+     different data are equal here. What it does establish is that no command appears on one side
+     and not the other — which is how `lake --version`, present in CI's self-report step and
+     missing from the published script, was found.
    * **Its `# CI step N [key].` labels match the workflow.** Expanded, the labels must cover
      `.github/workflows/ci.yml`'s steps exactly once each, in order, with each label's key
      occurring in that step's `name`. A step added to, removed from or reordered within the
@@ -211,8 +231,9 @@ against the fixture table published in this document. Three agreeing edits is a 
 one, and it is not a guarantee; naming the bar is the honest thing to do with it.
 
 **Every roster is in the repository it governs, and that includes the coverage rule's.**
-`DECLARED_AUXILIARY`, `DECLARED_YAML`, `EXCLUDED_DIRS` and the covered-suffix set all sit in
-`scripts/check_imports.py`. Adding a directory to the exclusions, or a file to either declared
+`DECLARED_AUXILIARY`, `DECLARED_YAML`, `DECLARED_BUILD_FILES`, `EXCLUDED_DIRS` and the
+covered-suffix set all sit in `scripts/check_imports.py`; `IGNORED_COMMANDS`, `NEVER_IGNORABLE` and `DECLARED_PLATFORM_BRANCHES` sit in
+`scripts/check_doc_claims.py`. Adding a directory to the exclusions, or a file to either declared
 list, is a one-line change that re-opens exactly the area the rule closes — and nothing but review
 of the diff will say so. This is not a defect in the rule; it is the same same-commit limit every
 declared roster here has, and it cannot be removed from inside the repository. It is worth stating
@@ -462,8 +483,8 @@ a library that just finished building — the two conditions cannot both hold.
 
 ### Required regression tests
 
-**22 fixture runs covering 12 failure modes** — twelve ways for this pipeline to be wrong; mode 6
-is exercised twice with a different set of layers active (6 and 6b), mode 7 once per forbidden
+**24 fixture runs covering 14 failure modes** — fourteen ways for this pipeline to be wrong; mode
+6 is exercised twice with a different set of layers active (6 and 6b), mode 7 once per forbidden
 lexeme (7a–7d), because a policy rule that no fixture exercises can be deleted without turning
 anything red, mode 9 once per place a Lean file has actually turned up unclassified (9a–9c), mode
 10 once per directory that classification excludes (10a–10c), and mode 12 once per kind of
@@ -542,9 +563,11 @@ exited 0, `1` = exited nonzero, `-` = not run):
      12a   imports         0         1         0         0         1         0         -   ok
      12b   imports         0         1         0         0         1         0         -   ok
      12c   imports         0         1         0         0         1         0         -   ok
+      13      docs         0         0         0         0         0         0         1   ok
+      14   imports         0         1         0         0         1         0         -   ok
       11      docs         0         0         0         0         0         0         1   ok
 
-all 22 fixture run(s) covering 12 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
+all 24 fixture run(s) covering 14 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
 ```
 
 | # | Fragment | Layer under test | Why that layer, and why not another |
@@ -570,6 +593,8 @@ all 22 fixture run(s) covering 12 failure mode(s) behaved as declared: each brok
 | 12a | `tools/helper.py` | covered-artifact coverage | The class again, one file type over. The `.lean` rule said nothing about `.py`, so a Python file outside `scripts/` was hashed by nothing and classified by nobody; a workflow step invoking it would have run unhashed content, and the command-set comparison would have noticed the new *call* while saying nothing about the *callee* being outside the manifest. |
 | 12b | `tools/helper.sh` | covered-artifact coverage | Same, for shell. Both categories now require the file to live under `scripts/` **and** to be present in `reports/PROOF.sha256`, with the manifest asked for its own file list rather than the rule restating it. |
 | 12c | `.github/workflows/extra.yml` | covered-artifact coverage | The sharpest of the three: GitHub Actions runs every file under `.github/workflows/` on its own schedule and permissions, with no step of this repository referring to it. So YAML is declared file by file, not admitted by directory, and each declared file must also be hashed. |
+| 13 | `node /tmp/whatever.js` appended to the `run:` of workflow step 3 | document claims | No new step, so the label check still sees eleven; no new file, so coverage sees nothing; and under the old comparison `node` was a word the vocabulary did not recognise, which made the two command sets equal and the run green. The comparison is inverted now: every command in command position is compared, and only what `IGNORED_COMMANDS` declares indifferent is dropped. |
+| 14 | `lake-manifest.json` removed from `FIXED_FILES` in `scripts/gen_proof_sha256.py` | covered-artifact coverage | That file carries none of the covered suffixes, so the suffix rule says nothing about it, and the only thing that used to protect it was a list inside the very script an edit would touch — dropping the entry produced a shorter manifest and a green run. `scripts/check_imports.py` now declares the build and pin files separately and requires the two lists to be equal. |
 | 11 | An extra `FreeBSD/x86_64)` branch in the published install script, selecting the Linux archive | document claims | Every required branch and the `*)` default remain, and the set of archives offered is unchanged — which is why the previous version of the platform check passed it. It asked whether the recorded platforms were covered, not whether anything else was, so a platform quietly stopped being refused and started receiving another platform's build. The branch set must now equal the declared one exactly. This is the one fixture whose subject lives in a document rather than in the sources, so it is also the only one that runs `scripts/check_doc_claims.py`. |
 
 For every fixture except 6 and 6b the runner regenerates the manifest inside the copy after
