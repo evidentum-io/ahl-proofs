@@ -1324,10 +1324,11 @@ def main() -> int:
         return 1
 
     print(
+        f"{WORKFLOW} parsed under the strict schema ({len(ci_steps)} steps); "
         f"document claims hold: {len(DECLARED_STRUCTURAL_CHECKS)} structural check(s) on the "
-        f"published install script passed (single block, sh -n, CI step labels against all "
-        f"{len(ci_steps)} workflow steps, and the platform-selection block parsed and checked "
-        f"for exactly {len(DECLARED_PLATFORM_BRANCHES)} declared branches); "
+        f"published install script passed (it is one block and passes sh -n; its CI step labels "
+        f"cover all {len(ci_steps)} workflow steps in order; its platform-selection block was "
+        f"parsed and offers exactly {len(DECLARED_PLATFORM_BRANCHES)} declared branches); "
         f"{len(transcripts)} published transcript(s) matched exactly (one "
         f"block each, in its own section); the build transcript matched on modules "
         f"({len(built_modules)}) and job count ({jobs}); {len(claims)} numeric/pin claim(s) "

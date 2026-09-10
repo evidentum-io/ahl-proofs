@@ -578,51 +578,57 @@ differs among the files it hashes. Those three are safe to omit rather than mere
 the runner never invokes git and never builds in the real tree, only in the copies. The published
 summary line names the exclusions and the file count, so the scope of the claim travels with it.
 
-The table below is the runner's own output on the tree this document describes (`0` = the stage
-exited 0, `1` = exited nonzero, `-` = not run):
+The table below is the runner's **declaration** — the exit status each stage of each run must
+produce (`0` = the stage exits 0, `1` = exits nonzero, `-` = the stage is not run). It is rendered
+by `scripts/regression_fixtures.py --expected-table`, which executes no fixture, and
+`scripts/check_doc_claims.py` compares it against this document character for character. Publishing
+the declaration rather than a captured run is sound because a run asserts actual == expected for
+every stage of every fixture and fails otherwise: on any passing run the observed table is this
+one. It also means the table carries no per-row verdict — a verdict is something only a run
+reaches:
 
 ```
  fixture     layer     build   imports    policy     audit      gate  manifest      docs
-       1   imports         0         1         0         0         1         0         -   ok
-       2    policy         0         0         1         0         1         0         -   ok
-       3    policy         0         0         1         0         1         0         -   ok
-       4     build         1         0         1         -         1         0         -   ok
-       5     audit         0         0         0         1         1         0         -   ok
-       6  manifest         0         1         0         0         1         1         -   ok
-      6b  manifest         0         0         0         0         0         1         -   ok
-      7a    policy         0         0         1         0         1         0         -   ok
-      7b    policy         0         0         1         0         1         0         -   ok
-      7c    policy         0         0         1         0         1         0         -   ok
-      7d    policy         0         0         1         0         1         0         -   ok
-       8  manifest         0         0         0         0         0         1         -   ok
-      9a   imports         0         1         0         0         1         0         -   ok
-      9b   imports         0         1         0         0         1         0         -   ok
-      9c   imports         0         1         0         0         1         1         -   ok
-     10a   imports         0         1         0         0         1         0         -   ok
-     10b   imports         0         1         0         0         1         0         -   ok
-     10c   imports         0         1         0         0         1         0         -   ok
-     12a   imports         0         1         0         0         1         0         -   ok
-     12b   imports         0         1         0         0         1         0         -   ok
-     12c   imports         0         1         0         0         1         0         -   ok
-     15a      docs         -         0         0         -         -         0         1   ok
-     15b      docs         -         0         0         -         -         0         1   ok
-     15c      docs         -         0         0         -         -         0         1   ok
-     16a      docs         -         0         0         -         -         0         1   ok
-     16b      docs         -         0         0         -         -         0         1   ok
-     16c      docs         -         0         0         -         -         0         1   ok
-     16d      docs         -         0         0         -         -         0         1   ok
-      17      docs         -         0         0         -         -         0         1   ok
-      18     audit         0         0         0         1         1         0         -   ok
-     19a      docs         -         0         0         -         -         0         1   ok
-     19b      docs         -         0         0         -         -         0         1   ok
-     19c      docs         -         0         0         -         -         0         1   ok
-     20a      docs         -         0         0         -         -         0         1   ok
-     20b      docs         -         0         0         -         -         0         1   ok
-     20c      docs         -         0         0         -         -         0         1   ok
-      14   imports         0         1         0         0         1         0         -   ok
-      11      docs         -         0         0         -         -         0         1   ok
+       1   imports         0         1         0         0         1         0         -
+       2    policy         0         0         1         0         1         0         -
+       3    policy         0         0         1         0         1         0         -
+       4     build         1         0         1         -         1         0         -
+       5     audit         0         0         0         1         1         0         -
+       6  manifest         0         1         0         0         1         1         -
+      6b  manifest         0         0         0         0         0         1         -
+      7a    policy         0         0         1         0         1         0         -
+      7b    policy         0         0         1         0         1         0         -
+      7c    policy         0         0         1         0         1         0         -
+      7d    policy         0         0         1         0         1         0         -
+       8  manifest         0         0         0         0         0         1         -
+      9a   imports         0         1         0         0         1         0         -
+      9b   imports         0         1         0         0         1         0         -
+      9c   imports         0         1         0         0         1         1         -
+     10a   imports         0         1         0         0         1         0         -
+     10b   imports         0         1         0         0         1         0         -
+     10c   imports         0         1         0         0         1         0         -
+     12a   imports         0         1         0         0         1         0         -
+     12b   imports         0         1         0         0         1         0         -
+     12c   imports         0         1         0         0         1         0         -
+     15a      docs         -         0         0         -         -         0         1
+     15b      docs         -         0         0         -         -         0         1
+     15c      docs         -         0         0         -         -         0         1
+     16a      docs         -         0         0         -         -         0         1
+     16b      docs         -         0         0         -         -         0         1
+     16c      docs         -         0         0         -         -         0         1
+     16d      docs         -         0         0         -         -         0         1
+      17      docs         -         0         0         -         -         0         1
+      18     audit         0         0         0         1         1         0         -
+     19a      docs         -         0         0         -         -         0         1
+     19b      docs         -         0         0         -         -         0         1
+     19c      docs         -         0         0         -         -         0         1
+     20a      docs         -         0         0         -         -         0         1
+     20b      docs         -         0         0         -         -         0         1
+     20c      docs         -         0         0         -         -         0         1
+      14   imports         0         1         0         0         1         0         -
+      11      docs         -         0         0         -         -         0         1
 
-all 38 fixture run(s) covering 19 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
+declared outcomes for 38 fixture run(s) covering 19 failure mode(s). Nothing was executed to produce this table: it is rendered from the declarations, and a run is what checks them.
 ```
 
 | # | Fragment | Layer under test | Why that layer, and why not another |
@@ -795,7 +801,9 @@ repository where they are allowed to appear — it is generated output, not a `.
 pin, the lake project files, every `.lean` file under the library and under `scripts/`
 (discovered by the same glob `scripts/list_theorems.py` uses for the library files — not a
 hand-maintained list, so a *new* `.lean` file cannot go unaudited without this check noticing the
-manifest is stale), every audit script, and `.github/workflows/ci.yml` itself:
+manifest is stale), every `.py`, `.sh` and `.lean` file under `scripts/` — named by suffix rather
+than as "every audit script", which would be wider than the walk — and `.github/workflows/ci.yml`
+itself:
 
 ```
 $ python3 scripts/gen_proof_sha256.py --check

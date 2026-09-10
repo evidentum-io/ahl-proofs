@@ -147,6 +147,7 @@ def main() -> int:
         return 1
 
     all_names: list[str] = []
+    per_file: list[tuple[pathlib.Path, int]] = []
     problems: list[str] = []
     for f in files:
         rel = f.relative_to(root)
@@ -164,6 +165,7 @@ def main() -> int:
             )
         if args.report:
             print(f"{rel}: {len(names)} theorem(s)", file=sys.stderr)
+        per_file.append((f, len(names)))
         all_names.extend(names)
 
     if problems:
@@ -179,7 +181,15 @@ def main() -> int:
     for name in all_names:
         print(name)
     if args.report:
-        print(f"total: {len(all_names)} theorem(s) in {len(files)} file(s)", file=sys.stderr)
+        # "in N file(s)" once meant the number scanned, which is not the number that declare
+        # anything — ten files are scanned here and five declare a theorem. The documents carried
+        # the same conflation until it was found; the line that produces the number says both.
+        with_decls = sum(1 for _, n in per_file if n)
+        print(
+            f"total: {len(all_names)} theorem(s), declared in {with_decls} of the {len(files)} "
+            "file(s) scanned",
+            file=sys.stderr,
+        )
     return 0
 
 

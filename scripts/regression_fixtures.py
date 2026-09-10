@@ -863,14 +863,21 @@ def run_fixture(spec: dict, root: pathlib.Path, verbose: bool) -> tuple[bool, di
     return not problems, actual, problems
 
 
-def render_table(rows: list[tuple[str, str, dict, bool]], hashed: int, passed: bool) -> str:
-    """The runner's own report, in the exact form a passing run prints it.
+def render_table(rows: list[tuple[str, str, dict, bool]], hashed: int | None,
+                 outcome: str) -> str:
+    """The table of per-stage exit statuses, with a closing line that says how it was obtained.
 
-    `--expected-table` renders this from the *declared* expectations without running anything, so
-    a document can be checked against it cheaply (`scripts/check_doc_claims.py` does exactly
-    that). That is sound only because a run asserts actual == expected for every stage of every
-    fixture and fails otherwise: the expected table and the observed table are the same table on
-    any run that succeeds, and on a run that does not succeed nothing is published.
+    `outcome` is one of "declared", "passed" or "failed", and it decides that closing line —
+    which is the whole point of the parameter. `--expected-table` renders the table from the
+    *declarations* without executing anything, and it used to close with "behaved as declared:
+    each broke the pipeline … Working tree unchanged", a sentence describing a run that had not
+    happened. Nothing downstream was fooled — CI runs the fixtures in their own step — but a
+    printed line that describes work not done is the same defect as a check that claims more than
+    it establishes, and this repository has now produced that defect three times. So the declared
+    rendering says it is declared, and only a real run may say a run behaved.
+
+    Publishing the declared table is still sound: a run asserts actual == expected for every stage
+    of every fixture and fails otherwise, so on any passing run the observed table *is* this one.
     """
     width = max(len(s) for s in STAGES)
     header = "  ".join(s.rjust(width) for s in STAGES)
@@ -879,10 +886,19 @@ def render_table(rows: list[tuple[str, str, dict, bool]], hashed: int, passed: b
         cells = "  ".join(
             ("-" if actual.get(s) is None else str(actual[s])).rjust(width) for s in STAGES
         )
-        lines.append(f"{fid:>8}  {layer:>8}  {cells}   {'ok' if ok else 'FAILED'}")
+        # No per-row verdict in the declared rendering: "ok" is a verdict, and in that mode
+        # nothing has been run to reach one.
+        verdict = "" if outcome == "declared" else ("   ok" if ok else "   FAILED")
+        lines.append(f"{fid:>8}  {layer:>8}  {cells}{verdict}")
     lines.append("")
     excluded = ", ".join(sorted(f"{d}/" for d in EXCLUDED))
-    if passed:
+    if outcome == "declared":
+        lines.append(
+            f"declared outcomes for {len(DECLARED_RUNS)} fixture run(s) covering "
+            f"{len(DECLARED_MODES)} failure mode(s). Nothing was executed to produce this table: "
+            "it is rendered from the declarations, and a run is what checks them."
+        )
+    elif outcome == "passed":
         lines.append(
             f"all {len(DECLARED_RUNS)} fixture run(s) covering {len(DECLARED_MODES)} failure "
             "mode(s) behaved as declared: each broke the pipeline, and each was caught by the "
@@ -929,7 +945,7 @@ def main() -> int:
 
     if args.expected_table:
         rows = [(f["id"], f["layer"], f["expect"], True) for f in FIXTURES]
-        print(render_table(rows, len(snapshot(root)), passed=True))
+        print(render_table(rows, None, outcome="declared"))
         return 0
 
     before = snapshot(root)
@@ -976,7 +992,7 @@ def main() -> int:
             "it hashes byte-for-byte identical: " + ", ".join(changed)
         )
 
-    print(render_table(rows, len(before), passed=not failures))
+    print(render_table(rows, len(before), outcome="passed" if not failures else "failed"))
 
     if failures:
         print("\nregression_fixtures.py: FAIL", file=sys.stderr)

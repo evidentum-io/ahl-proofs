@@ -148,8 +148,12 @@ the **immutable identifiers** of everything this model was compared against.
 same-commit internal-consistency check over every file that participates in the build or the
 audit tooling — not a proof of integrity or provenance, since it is generated and committed by
 the same process that could edit any of the files it covers — regenerated from a file *glob*
-rather than a hand-maintained list, so a new `.lean` file cannot go unaudited without CI noticing
-the manifest is stale.
+rather than a hand-maintained list, so a new `.lean` file **under `AhlProofs/` or `scripts/`**
+cannot go unaudited without CI noticing the manifest is stale. A `.lean` anywhere else does not
+make the manifest stale at all — the manifest's walk never reaches it — and is caught one layer
+earlier, by artifact coverage, which refuses a Lean file that belongs to no declared category.
+The two checks divide the work: coverage decides which files must be covered, the manifest
+decides whether the recorded digests match the files that are.
 
 ## Lemma 1 — the model (invariants page Section 0)
 

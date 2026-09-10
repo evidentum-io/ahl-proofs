@@ -3,7 +3,8 @@
 that participates in the Lean build, the audit tooling, or the CI workflow that runs both: the
 toolchain pin, the lake project files, every `.lean` file under the library (discovered by a
 recursive glob, not a hand-maintained list, so a *new* `.lean` file is picked up automatically),
-every audit script under `scripts/` **at any depth**, and `.github/workflows/ci.yml` itself — the
+every `.py`, `.sh` and `.lean` file under `scripts/` **at any depth**, and
+`.github/workflows/ci.yml` itself — the
 workflow is what determines whether the audit runs at all, so a manifest that did not cover it
 would not notice a change that quietly deleted the audit step.
 
@@ -70,15 +71,21 @@ def discover(root: pathlib.Path) -> list[pathlib.Path]:
     simply dropped out of the set. On a tree with none of them present, and an empty
     `reports/PROOF.sha256`, `--check` compared `[]` against `[]` and reported success — having
     verified nothing, while this module's docstring went on promising that the toolchain pin, the
-    lake project files and every audit script were covered. That is the same defect as an audit
+    lake project files and the tooling under `scripts/` were covered. That is the same defect as an
+    audit
     whose target list can be truncated to empty and still pass, and it is the third time this
     repository has grown one. A set built by filtering and then compared against a manifest built
     the same way must treat a degenerate set as failure, never as agreement.
 
-    `rglob` is used for `scripts/` as well as for the library: the documentation promises *every*
-    audit script, and an earlier `glob` covered only the immediate directory, so a script in a
-    subdirectory would have gone unhashed while the prose said otherwise. Regression fixture 8
-    exercises exactly that.
+    `rglob` is used for `scripts/` as well as for the library, because an earlier `glob` covered
+    only the immediate directory and a script in a subdirectory went unhashed. Regression fixture
+    8 exercises exactly that.
+
+    The suffixes are named rather than described as "every audit script", which would be wider
+    than the code: a file under `scripts/` with no suffix, or one for an interpreter not used
+    here, is not discovered. Widening the walk would mean deciding what counts as executable, and
+    that is a judgement rather than a property — the same reason a Lean file without a `.lean`
+    suffix is outside the coverage rule instead of being sniffed for.
     """
     missing = [f for f in FIXED_FILES if not (root / f).is_file()]
     if missing:
