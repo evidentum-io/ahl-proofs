@@ -73,6 +73,46 @@ audit is silent about it — which is not a build failure, it is a successful bu
 audit cannot see. That gap is covered by `scripts/check_source_policy.py`, which refuses the
 lexemes an `example` would have to carry to be dangerous, and by regression fixture 2.
 
+## Why the audit re-asks the kernel instead of trusting that the build checked
+
+Everything above reads the environment the build produced. That is authoritative about *what
+declarations exist* and *which axioms they reach*, but it is not by itself evidence that any of
+them was ever type-checked: Lean has an option that switches the kernel's re-typechecking off for
+the declarations under it, and a declaration accepted that way sits in `env.constants` looking
+exactly like a checked one — its axiom closure is empty because nothing was checked. Until now the
+only defence was `scripts/check_source_policy.py` refusing that option's name in the source text,
+which is a defence against a *spelling*: Lean accepts the same option under a French-quoted
+identifier, and the byte pattern did not match it. A theorem of `False` written that way passed the
+build, the policy and the whole gate.
+
+So this file stops inferring that the kernel ran and makes it run, here, under options it
+constructs itself:
+
+* `env.toKernelEnv` exposes the kernel-level environment behind the elaborated one.
+* Every constant this repository owns is re-added to a copy of it under a fresh name, via
+  `Kernel.Environment.addDecl`, with an **empty option set** built in this file (`recheckOptions`).
+  `addDecl` type-checks the declaration's value against its type unless told not to, and what it
+  is told comes from this audit, never from the source being audited. A `set_option` in a proof
+  file — under any spelling, quoted or not — cannot reach it.
+* Re-adding under a fresh name is what makes this a check of each constant *individually*. A
+  declaration that was smuggled in unchecked still sits in the environment, so its dependents
+  re-check fine against its stated type; but the smuggled declaration is itself in the list, and
+  its own re-add is what fails.
+
+Constants are re-added by kind: theorems, safe definitions, opaque definitions and axioms one at a
+time; inductive types as whole families (`Declaration.inductDecl`, with the family's internal
+references rewritten to the fresh copies), which makes the kernel re-derive and re-check their
+constructors and recursors as well.
+
+The one kind not re-added is an unsafe or `partial` constant — in this library, only the compiler
+companions Lean generates for `partial` definitions. Nothing that carries proof content can rest on
+them, and that is not an assertion made here: every declaration re-added above is a *safe* one, and
+the kernel refuses a safe declaration that mentions a `partial` one ("safe declaration must not
+contain partial declaration '...'"). Each successful re-add is therefore itself evidence that the
+constant does not depend on anything skipped. Any *other* reason for skipping a constant is a
+failure, not a silent omission: the classification is exhaustive, its default branch fails, and the
+buckets are required to add up to the number of constants scanned.
+
 ## What this file does *not* cover, and which sibling layer does
 
 This audit sees exactly what was compiled, which is exactly what the root module `AhlProofs.lean`
@@ -81,12 +121,13 @@ transitively imports. Two gaps follow, and neither is closed here:
 * A `.lean` file under `AhlProofs/` that nobody imports is never built, so no constant of its
   reaches `env.constants` and this audit is silent about it. `scripts/check_imports.py` closes
   that by requiring every file found on disk to be reachable by imports from the root module.
-* A declaration that never becomes a constant (`example`), and a declaration whose kernel
-  typecheck was locally disabled (its axiom closure is clean because nothing was checked), are
-  both invisible to a walk over `env.constants` and `Lean.collectAxioms`.
-  `scripts/check_source_policy.py` refuses the four lexemes that make either possible. That
-  layer is a policy over source text, not a semantic check: it establishes nothing about meaning
-  and does not replace this file.
+* A declaration that never becomes a constant (`example`) is invisible to a walk over
+  `env.constants` and `Lean.collectAxioms`, and stays invisible to the kernel re-check too — there
+  is no constant to re-add. `scripts/check_source_policy.py` refuses the lexemes an `example` would
+  have to carry to be dangerous. That layer is a policy over source text, not a semantic check: it
+  establishes nothing about meaning and does not replace this file. The sibling gap — a
+  declaration whose kernel typecheck was locally switched off — used to belong to that same policy
+  layer and no longer does: it is closed here, constructively, by the re-check described above.
 
 `scripts/check_axioms.sh` runs all three in order. What none of them defends against is a
 participant with write access editing the checks themselves — see "Trust boundary" in
@@ -161,6 +202,35 @@ nothing imports this file and the audit has already run — and is not reported.
 def declaredInThisFile (env : Environment) (name : Name) : Bool :=
   (env.getModuleIdxFor? name).isNone
 
+/-- The options the kernel re-check runs under: empty, so every option has its default value —
+including the one whose default is "do type-check". This value is built here, in the audit, and
+handed to `Kernel.Environment.addDecl` explicitly, so no `set_option` in an audited source file can
+influence it under any spelling. -/
+def recheckOptions : Options := {}
+
+/-- The fresh name a constant is re-added under, so re-adding it cannot collide with the constant
+already present. The suffix is deliberately not a legal source identifier suffix anyone would
+write. -/
+def recheckName (n : Name) : Name := n ++ `_ahlKernelRecheck
+
+/-- Rewrite constant references according to `m`. Needed when re-adding an inductive family: the
+family's types and constructors refer to one another, and in the copy those references must point
+at the copies, not back at the originals. -/
+def renameConstants (m : Std.HashMap Name Name) (e : Expr) : Expr :=
+  e.replace fun
+    | .const n us => (m[n]?).map (fun n' => .const n' us)
+    | _ => none
+
+/-- The single reason a constant of this library may be left out of the kernel re-check. Written
+once and compared against, so that a constant skipped for any other reason fails the audit instead
+of quietly reducing what was checked. -/
+def unsafeCompanionReason : String :=
+  "unsafe/`partial` constant — in this library, only a compiler companion Lean generates for a \
+`partial` definition"
+
+/-- The exhaustive list of accepted skip reasons. Anything else is an audit failure. -/
+def declaredSkipReasons : List String := [unsafeCompanionReason]
+
 #eval show MetaM Unit from do
   let env ← getEnv
   let mut scanned : Nat := 0
@@ -186,6 +256,90 @@ def declaredInThisFile (env : Environment) (name : Name) : Bool :=
         if !allowedAxioms.contains ax then
           outsideAllowed := outsideAllowed.push (name, ax)
 
+  -- Kernel re-check. Classify every constant this repository owns into "re-add it directly",
+  -- "re-add it as part of its inductive family", or "skipped, for a reason that must be on the
+  -- declared list". The default branch is a failure, so a constant kind this audit has never seen
+  -- cannot pass by falling through.
+  let mut singles : Array (Name × Declaration) := #[]
+  let mut families : Std.HashMap Name (List Name) := {}
+  let mut inductCount : Nat := 0
+  let mut ctorCount : Nat := 0
+  let mut recCount : Nat := 0
+  let mut skippedList : Array (Name × String) := #[]
+  for (name, info) in env.constants do
+    if isLibraryConst env name then
+      let fresh := recheckName name
+      match info with
+      | .thmInfo v => singles := singles.push (name, .thmDecl { v with name := fresh })
+      | .opaqueInfo v =>
+          if v.isUnsafe then skippedList := skippedList.push (name, unsafeCompanionReason)
+          else singles := singles.push (name, .opaqueDecl { v with name := fresh })
+      | .axiomInfo v =>
+          if v.isUnsafe then skippedList := skippedList.push (name, unsafeCompanionReason)
+          else singles := singles.push (name, .axiomDecl { v with name := fresh })
+      | .defnInfo v =>
+          if v.safety == .safe then
+            singles := singles.push (name, .defnDecl { v with name := fresh })
+          else
+            skippedList := skippedList.push (name, unsafeCompanionReason)
+      | .inductInfo v =>
+          inductCount := inductCount + 1
+          families := families.insert v.all.head! v.all
+      | .ctorInfo _ => ctorCount := ctorCount + 1
+      | .recInfo _ => recCount := recCount + 1
+      | _ => skippedList := skippedList.push (name, "unhandled constant kind")
+
+  -- Note on what the skip costs, and why no separate reachability scan is needed: every
+  -- declaration re-added below is a *safe* one, and Lean's kernel refuses a safe declaration that
+  -- mentions an unsafe or `partial` constant ("safe declaration must not contain partial
+  -- declaration '...'", verified against this very library's `._unsafe_rec` companions). So each
+  -- successful re-add is itself evidence that the constant does not rest on anything skipped
+  -- here; an earlier version of this audit walked every value to establish the same fact by hand,
+  -- at four times the cost of the re-check it was guarding.
+  let kenv := env.toKernelEnv
+  let mut rejected : Array Name := #[]
+  let mut recheckedSingles : Nat := 0
+  for (name, decl) in singles do
+    match kenv.addDecl recheckOptions decl with
+    | .ok _ => recheckedSingles := recheckedSingles + 1
+    | .error _ => rejected := rejected.push name
+
+  let mut recheckedFamilies : Nat := 0
+  let mut missingCtors : Array Name := #[]
+  let mut unsafeFamilies : Array Name := #[]
+  for (head, all) in families.toList do
+    let mut ren : Std.HashMap Name Name := {}
+    for n in all do
+      ren := ren.insert n (recheckName n)
+      if let some (.inductInfo v) := env.find? n then
+        for c in v.ctors do ren := ren.insert c (recheckName c)
+    let mut types : List InductiveType := []
+    let mut lparams : List Name := []
+    let mut nparams : Nat := 0
+    let mut famUnsafe : Bool := false
+    for n in all do
+      if let some (.inductInfo v) := env.find? n then
+        lparams := v.levelParams
+        nparams := v.numParams
+        famUnsafe := v.isUnsafe
+        let mut ctors : List Constructor := []
+        for c in v.ctors do
+          match env.find? c with
+          | some (.ctorInfo cv) =>
+              ctors := ctors ++ [{ name := recheckName c, type := renameConstants ren cv.type }]
+          | _ => missingCtors := missingCtors.push c
+        types := types ++ [{ name := recheckName n, type := renameConstants ren v.type, ctors }]
+    if famUnsafe then
+      unsafeFamilies := unsafeFamilies.push head
+    else
+      match kenv.addDecl recheckOptions (.inductDecl lparams nparams types false) with
+      | .ok _ => recheckedFamilies := recheckedFamilies + 1
+      | .error _ => rejected := rejected.push head
+
+  let undeclaredSkips := skippedList.filter (fun (_, why) => !declaredSkipReasons.contains why)
+  let accounted := recheckedSingles + rejected.size + skippedList.size + inductCount
+    + ctorCount + recCount
+
   IO.println s!"scanned {scanned} constant(s) whose home module is `AhlProofs` or under it \
 (every kind of declaration, not a curated subset of theorems)"
   IO.println s!"own axiom declarations: {if ownAxioms.isEmpty then "(none)" else toString ownAxioms}"
@@ -196,6 +350,17 @@ def declaredInThisFile (env : Environment) (name : Name) : Bool :=
 {if outsideAllowed.isEmpty then "(none)" else toString outsideAllowed}"
   IO.println s!"axiom(s) declared by this audit file ahead of this check: \
 {if auditOwnAxioms.isEmpty then "(none)" else toString auditOwnAxioms}"
+  IO.println s!"kernel re-check: re-added {recheckedSingles} of {singles.size} constant(s) \
+individually and {recheckedFamilies} of {families.size} inductive family(ies) — the families \
+carry {inductCount} type(s), {ctorCount} constructor(s) and {recCount} recursor(s) — into a \
+kernel environment holding this audit's own empty option set"
+  IO.println s!"rejected by the kernel on re-check: \
+{if rejected.isEmpty then "(none)" else toString rejected}"
+  IO.println s!"not re-added: {skippedList.size} constant(s), \
+{if undeclaredSkips.isEmpty then "each for a declared reason" else "SOME FOR AN UNDECLARED REASON"} \
+(no safe declaration may mention one — the kernel refuses that, so every re-add above is also \
+evidence that nothing checked rests on them); \
+{accounted} of {scanned} scanned constant(s) accounted for"
 
   let mut problems : Array String := #[]
   if scanned == 0 then
@@ -219,6 +384,34 @@ is reported for every axiom declared ahead of the evaluation below."
     problems := problems.push
       s!"Classical.choice usage does not match ahl/docs-md/priority-zero.md's claim \
 (expected exactly {expectedChoiceUsers}, got {choiceSorted})"
+  if !rejected.isEmpty then
+    problems := problems.push
+      s!"the kernel rejected {rejected.size} constant(s) when asked to check them again under \
+this audit's own options: {rejected}. A constant that the build accepted but the kernel refuses \
+was not type-checked when it was added."
+  if recheckedSingles == 0 then
+    problems := problems.push
+      "the kernel re-check re-added no constant at all — refusing to report success on a check \
+that examined nothing"
+  if !undeclaredSkips.isEmpty then
+    problems := problems.push
+      s!"constant(s) left out of the kernel re-check for a reason not on the declared list \
+{declaredSkipReasons}: {undeclaredSkips}"
+  if !unsafeFamilies.isEmpty then
+    problems := problems.push
+      s!"inductive family(ies) declared unsafe: {unsafeFamilies}. This library has none, and an \
+unsafe family would put its constructors and recursors outside what the re-check covers, so it is \
+refused rather than skipped quietly."
+  if accounted != scanned then
+    problems := problems.push
+      s!"the kernel re-check accounted for {accounted} of the {scanned} constant(s) scanned. Every \
+constant must land in exactly one bucket — re-added, rejected, skipped for a declared reason, or \
+covered as part of an inductive family — so a mismatch means the classification silently lost \
+one."
+  if !missingCtors.isEmpty then
+    problems := problems.push
+      s!"inductive constructor(s) named by their type but absent from the environment, so the \
+family was re-added with fewer constructors than it declares: {missingCtors}"
 
   if problems.size > 0 then
     let report := "\n  - " ++ String.intercalate "\n  - " problems.toList

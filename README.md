@@ -81,9 +81,11 @@ The gate is `./scripts/check_axioms.sh`, three layers in order:
    lexemes is rejected in every `.lean` file the layer above admits — the same three directories
    are skipped here and refused there — with no allowlist of files or places. Which lexemes
    is not written out here; the gate prints them, and that output is published and checked in
-   `reports/PROOF.md`. It decides nothing about meaning;
-   it forbids the spellings that would leave the next layer with nothing to find, such as a
-   placeholder proof inside an `example`, which never becomes a constant in the environment.
+   `reports/PROOF.md`. It decides nothing about meaning; it refuses *names* — and every file is
+   matched twice, as it is on disk and again with Lean's identifier-quoting characters removed,
+   so a rule catches a name rather than one spelling of it. What it buys is the case the next
+   layer structurally cannot see: a placeholder proof inside an `example`, which never becomes a
+   constant in the environment. What it does not buy is stated with it under "Trust boundary".
 3. **The environment audit** (`scripts/Audit.lean`) — the semantic layer, and the one that
    establishes what the proofs depend on. It imports the already-built library and walks the
    compiled `Lean.Environment` rather than parsing source text: every constant whose home module
@@ -95,13 +97,16 @@ The gate is `./scripts/check_axioms.sh`, three layers in order:
    `ahl/docs-md/priority-zero.md` makes, that the constants whose closure contains
    `Classical.choice` are exactly `{commit_plain_descriptor_collision}` — checked against every
    constant on every run, at a finer grain than the 102 named theorems, and it still holds
-   exactly.
+   exactly. The same layer then **re-adds every one of those constants to Lean's kernel**, under
+   a fresh name and under an option set the audit builds itself, so that "the kernel checked
+   this" is observed rather than assumed: a declaration accepted while the kernel's check was
+   switched off has a clean axiom closure, and is caught here anyway.
 
 That is a summary and not the account. What each layer does *not* establish, why the audit walks
 the environment instead of the sources, and the boundary of the whole construction are stated once
 under **"Trust boundary"** in `reports/PROOF.md`.
 
-**38 fixture runs covering 19 failure modes** are **run in CI on every push and pull request** by
+**40 fixture runs covering 19 failure modes** are **run in CI on every push and pull request** by
 `scripts/regression_fixtures.py`, immediately before the gate. They are not listed here: the
 modes are declared in that script and tabulated in `reports/PROOF.md`, "Required regression
 tests", and that table is checked against the declared roster on every run. A prose list here

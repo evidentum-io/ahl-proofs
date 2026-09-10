@@ -17,20 +17,39 @@ document" below. The four:
 
 * **The environment audit** — `scripts/Audit.lean`. It enumerates the constants of the
   *compiled* library (every `def`, `instance`, `private` declaration and generated helper, not a
-  curated list of theorems) and computes each one's transitive axiom closure with
-  `Lean.collectAxioms`. This is the check that establishes what the proofs actually depend on.
-  Everything in "Axiom audit" below is its output.
+  curated list of theorems) and does two things with each of them. It computes the transitive
+  axiom closure with `Lean.collectAxioms` — this is the check that establishes what the proofs
+  actually depend on. And it **re-adds the constant to Lean's kernel**, under a fresh name and
+  under an option set the audit constructs itself, so that "this was type-checked" is something
+  the audit observes rather than infers from the build having succeeded. Options written in a
+  source file cannot reach the kernel the audit talks to, in any spelling, so a declaration
+  accepted under a switched-off kernel check is caught here even though its axiom closure is
+  clean. The re-check covers every constant of the library except eight `unsafe` compiler
+  companions of `partial` definitions, which nothing that carries proof content may mention —
+  Lean's kernel refuses a safe declaration that does, so each successful re-add is itself the
+  evidence. Everything in "Axiom audit" below is its output.
 * **The policy over source text** — `scripts/check_source_policy.py`. It rejects four lexemes in
   every `.lean` file the coverage layer admits — `.git/`, `.lake/` and `__pycache__/` are skipped
   here and *refused* there, so a Lean file this scan does not reach fails the gate one layer
   earlier — namely: Lean's two placeholder proof terms, `warningAsError` set to false, and
-  `debug.skipKernelTC`. It decides nothing about meaning. It forbids spellings
-  that have no legitimate use in this repository, each of which is a way to leave the environment
-  audit with nothing to find — a placeholder inside an `example` never becomes a constant, and a
-  declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
-  because nothing was checked. It is a layer on top of the environment audit and never a
-  substitute for it.
-* **The regression fixtures** — `scripts/regression_fixtures.py`. 38 fixture runs covering 19
+  `debug.skipKernelTC`. **It decides nothing about meaning: it refuses names, not behaviour.**
+  That is the honest description of this layer and the reason it is no longer the only thing
+  standing between a proof and an unchecked kernel — the re-check in the environment audit is.
+  What this layer still buys is the case the audit structurally cannot see: a placeholder inside
+  an `example` never becomes a constant, so there is nothing for a walk over `env.constants` to
+  find, and only refusing the lexeme catches it.
+
+  One property of it changed this round, after it was found wrong. Lean lets an identifier be
+  written between `«` and `»`, and reads both spellings as the same name; a byte pattern for the
+  plain name matched neither quoted form, and a theorem of `False` written under the quoted
+  kernel-check option passed this policy, the gate and everything else. Every file is now matched
+  twice — as it is on disk and again with the quoting characters removed — so a rule matches a
+  name rather than one spelling of it, and the spellings each rule is required to catch are
+  themselves declared in the script and verified before any file is read. Banning the two
+  characters outright was tried and rejected on evidence: this repository uses them as Russian
+  quotation marks in doc comments, and `AhlProofs/Tree/Model.lean` needs identifier quoting for
+  the parameter `«from»`, because `from` is a Lean keyword.
+* **The regression fixtures** — `scripts/regression_fixtures.py`. 40 fixture runs covering 19
   failure modes of this repository, each applied to a throwaway copy of it, each required to fail
   *and* to fail at the layer that owns it, *and* to fail `./scripts/check_axioms.sh` itself with
   the diagnostic that names that layer. This is what keeps the other three honest: a layer that stopped working
@@ -501,6 +520,42 @@ document — see "Two counts, two purposes" below):
   is *exactly* `{AhlProofs.commit_plain_descriptor_collision}` — checked against every one of the
   645 constants, not only the 102 named theorems, and it still holds exactly at that finer grain:
   no automatically generated helper anywhere in the library pulls in choice by accident.
+* That the kernel actually checked each of them — see immediately below.
+
+**The kernel is asked again, rather than assumed to have been asked.** Everything above reads the
+environment the build produced. That is authoritative about which declarations exist and which
+axioms they reach, and it is *not* evidence that any of them was type-checked: Lean has an option
+that switches the kernel's re-typechecking off for the declarations under it, and a declaration
+accepted that way sits in `env.constants` looking exactly like a checked one, with an empty axiom
+closure, because nothing was checked. Until this round the only defence was the source policy
+refusing that option's name — a defence against a spelling, and it was defeated by one, as
+regression fixture 3b records.
+
+So the audit takes the kernel environment behind the elaborated one (`Environment.toKernelEnv`)
+and re-adds every constant of the library to a copy of it under a fresh name, via
+`Kernel.Environment.addDecl`, passing an **option set the audit itself constructs**. `addDecl`
+type-checks the declaration's value against its type unless told otherwise, and what it is told
+comes from the audit, never from the file being audited — so no `set_option` in a proof source
+reaches it, under any spelling, and neither does a build option in `lakefile.toml`, which is what
+fixture 3c plants. Re-adding under a fresh name is what makes this a check of each constant
+individually: a declaration smuggled in unchecked is still in the environment, so its dependents
+re-check happily against its stated type, but the smuggled declaration is itself in the list and
+its own re-add is what fails.
+
+Theorems, safe definitions, opaque definitions and axioms are re-added one at a time; inductive
+types are re-added as whole families, which makes the kernel re-derive and re-check their
+constructors and recursors too. **What is not re-added**, stated exactly: the eight `unsafe`
+compiler companions Lean generates for this library's `partial` definitions. Nothing carrying
+proof content may mention one — the kernel refuses a safe declaration that does — so each of the
+599 successful individual re-adds is itself the evidence that it does not, and no separate scan
+asserts it. Any *other* reason for skipping a constant fails the audit rather than shrinking it
+quietly: the classification's default branch is a failure, and the buckets are required to add up
+to the number of constants scanned, which the report line states.
+
+The cost is that the audit layer takes roughly twice as long — about 3.6 seconds became about 7.4
+on the machine "Live run" below describes, an illustrative measurement of the same kind as the
+build timings there and not a checked claim. That is the whole of it: no dependency, no extra
+tool, and nothing added to the build itself.
 
 **Two counts, two purposes.** `scripts/list_theorems.py` still exists and is unchanged in what it
 is *for*: counting the named `theorem`/`lemma` declarations for the prose numbers in this document
@@ -522,7 +577,7 @@ a library that just finished building — the two conditions cannot both hold.
 
 ### Required regression tests
 
-**38 fixture runs covering 19 failure modes** — nineteen ways for this pipeline to be wrong. Some
+**40 fixture runs covering 19 failure modes** — nineteen ways for this pipeline to be wrong. Some
 modes take more than one run, because the same mistake has more than one spelling and a rule that
 no fixture exercises can be deleted without turning anything red: where that applies, there is one
 run per lexeme, per excluded directory, per artifact kind, per field, per document. **Which modes
@@ -591,7 +646,9 @@ reaches:
  fixture     layer     build   imports    policy     audit      gate  manifest      docs
        1   imports         0         1         0         0         1         0         -
        2    policy         0         0         1         0         1         0         -
-       3    policy         0         0         1         0         1         0         -
+       3    policy         0         0         1         1         1         0         -
+      3b    policy         0         0         1         1         1         0         -
+      3c     audit         0         0         0         1         1         0         -
        4     build         1         0         1         -         1         0         -
        5     audit         0         0         0         1         1         0         -
        6  manifest         0         1         0         0         1         1         -
@@ -628,14 +685,16 @@ reaches:
       14   imports         0         1         0         0         1         0         -
       11      docs         -         0         0         -         -         0         1
 
-declared outcomes for 38 fixture run(s) covering 19 failure mode(s). Nothing was executed to produce this table: it is rendered from the declarations, and a run is what checks them.
+declared outcomes for 40 fixture run(s) covering 19 failure mode(s). Nothing was executed to produce this table: it is rendered from the declarations, and a run is what checks them.
 ```
 
 | # | Fragment | Layer under test | Why that layer, and why not another |
 |---|---|---|---|
 | 1 | `AhlProofs/Extra.lean`, containing `axiom planted_bad : False`, never added to `AhlProofs.lean` | import invariant | The build and the environment audit are blind here by construction: an unimported file is never compiled, so no constant of it exists to audit. This is the ordinary case of forgetting an `import` line, and it produces a repository whose green CI says nothing at all about that file. |
 | 2 | `set_option warningAsError false in` / `example : False := <placeholder>` | source policy | The environment audit cannot see this: an `example` is elaborated and discarded, never stored in `env.constants`, and the local `set_option` removes the build failure Lean's own warning would otherwise cause. |
-| 3 | `set_option debug.skipKernelTC true in` + a `run_tac` proof assigning `True.intro` to a goal of `False` | source policy | Lean 4.31.0 accepts this with exit 0 and a **clean** axiom closure — no placeholder axiom, no axiom of our own — because the kernel never re-checked the term. No walk over `env.constants` can detect it; only refusing the lexeme can. |
+| 3 | `set_option debug.skipKernelTC true in` + a `run_tac` proof assigning `True.intro` to a goal of `False` | source policy | Lean 4.31.0 accepts this with exit 0 and a **clean** axiom closure — no placeholder axiom, no axiom of our own — because the kernel never re-checked the term. The source policy refuses the lexeme, and since this round the environment audit rejects the constant as well, when it re-adds it to the kernel: both stages are required to fail. |
+| 3b | The same, with the option written `set_option «debug».«skipKernelTC» true in` | source policy | The spelling Lean treats as identical and a byte pattern for the plain name does not match. This exact tree passed the whole gate before this round. It now fails the policy, which matches names rather than spellings, and independently fails the audit, which asks the kernel again. |
+| 3c | The same proof with **no `set_option` anywhere**; the option is set in `lakefile.toml`'s `leanOptions` | environment audit | The isolation fixture for the kernel re-check, and the reason it exists rather than another byte pattern. The source policy scans `.lean` files, so an option set in the build file is outside what it reads — by definition, not by oversight — and it passes, correctly. The audit fails: `the kernel rejected 1 constant(s) when asked to check them again under this audit's own options`. |
 | 4 | `theorem probe_incomplete : True := by <placeholder>` | `lake build` | `declaration uses 'sorry'` is a warning promoted to an error by `lakefile.toml`. The source policy also rejects the lexeme (the runner asserts both), and the environment audit would have found `sorryAx` in the constant's closure had the build been allowed to finish — hence `-` for the audit stage: with no `.olean`s, its exit status would say nothing about the audit. |
 | 5 | `axiom probe_axiom : False` | environment audit | Both of the audit's own-axiom findings fire: `own axiom declaration(s), not part of Lean's trusted kernel` and `axiom closure is not a subset of the allowed set`. Declaring an axiom is not a Lean warning, so the build is untroubled by it. |
 | 6 | A new `.lean` file under `AhlProofs/`, manifest left stale | hash manifest | In this plain form the import invariant fires too; the runner still requires the *manifest* check to fail, so the fixture cannot pass on the strength of another layer. |
@@ -778,7 +837,7 @@ $ ./scripts/check_axioms.sh
 every covered artifact accounted for: 9 library module(s) under AhlProofs/, all reachable from AhlProofs.lean (10 module(s) in the closure); 1 declared auxiliary .lean; 7 tooling file(s) under scripts/; 1 declared CI configuration file(s); 0 unclassified, all inside the manifest's file list (that the recorded manifest matches it is checked separately, by gen_proof_sha256.py --check)
 
 == layer 2/3: scripts/check_source_policy.py (policy over source text) ==
-source policy holds: 11 .lean file(s) scanned, none contains `sorry`, `admit`, `warningAsError false`, `debug.skipKernelTC`
+source policy holds: 11 .lean file(s) scanned twice each — as read and with identifier-quoting characters removed — none contains `sorry`, `admit`, `warningAsError false`, `debug.skipKernelTC`; the 7 declared must-reject sample(s) were all rejected before the scan began
 
 == layer 3/3: scripts/Audit.lean (environment-based axiom & placeholder-proof audit) ==
 scanned 645 constant(s) whose home module is `AhlProofs` or under it (every kind of declaration, not a curated subset of theorems)
@@ -787,13 +846,19 @@ sorryAx present in the closure of: (none)
 Classical.choice used by: #[AhlProofs.commit_plain_descriptor_collision]
 axiom(s) outside the allowed set [propext, Classical.choice, Quot.sound]: (none)
 axiom(s) declared by this audit file ahead of this check: (none)
+kernel re-check: re-added 599 of 599 constant(s) individually and 10 of 10 inductive family(ies) — the families carry 10 type(s), 18 constructor(s) and 10 recursor(s) — into a kernel environment holding this audit's own empty option set
+rejected by the kernel on re-check: (none)
+not re-added: 8 constant(s), each for a declared reason (no safe declaration may mention one — the kernel refuses that, so every re-add above is also evidence that nothing checked rests on them); 645 of 645 scanned constant(s) accounted for
 extra axioms: (none) PASS
 ```
 
 Nine files under `AhlProofs/` plus the root module and `scripts/Audit.lean` make the eleven
 `.lean` files layer 2 scans; the ten modules of the import closure are the nine plus the root.
 Layer 2's report line lists the forbidden lexemes literally, which is the one place in this
-repository where they are allowed to appear — it is generated output, not a `.lean` file.
+repository where they are allowed to appear — it is generated output, not a `.lean` file. The
+seven must-reject samples it names are the spellings the policy is required to catch, checked
+against its own rule table before the scan starts; layer 3's last two lines are the kernel
+re-check described under "Axiom audit", and 599 + 8 + 10 + 18 + 10 is the 645 constants scanned.
 
 ### Binding: what `reports/PROOF.sha256` does and does not give you
 

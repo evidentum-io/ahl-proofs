@@ -1331,7 +1331,7 @@ def main() -> int:
         f"parsed and offers exactly {len(DECLARED_PLATFORM_BRANCHES)} declared branches); "
         f"{len(transcripts)} published transcript(s) matched exactly (one "
         f"block each, in its own section); the build transcript matched on modules "
-        f"({len(built_modules)}) and job count ({jobs}); {len(claims)} numeric/pin claim(s) "
+        f"({len(built_modules)}) and job count ({jobs}); {len(claims)} registered document claim(s) "
         f"matched ({theorems} theorems in {theorem_files} files, {constants} constants, "
         f"{manifest_files} files in the manifest, {runs} fixture runs covering {modes} failure "
         f"modes, {len(LEAN_RELEASE_DIGESTS)} release digests, Lean {lean_version} commit "

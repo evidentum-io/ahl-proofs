@@ -82,6 +82,27 @@ PLACEHOLDER = "sor" + "ry"
 ADMIT = "ad" + "mit"
 WARN_OFF = "warningAsError" + " false"
 SKIP_TC = "debug." + "skipKernelTC"
+# The same option name, written with Lean's identifier quoting. Lean reads the two spellings as
+# one identifier; `scripts/check_source_policy.py` used to read only the first, which is the gap
+# fixture 3b exists to hold shut.
+QL, QR = "\u00ab", "\u00bb"
+SKIP_TC_QUOTED = QL + "debug" + QR + "." + QL + "skipKernelTC" + QR
+
+# A theorem of `False` that only type-checks because nothing type-checked it: the tactic assigns
+# `True.intro` to a goal of `False`, which the elaborator accepts and the kernel does not. Shared
+# by the three fixtures of mode 3 so that they differ in exactly one thing -- *how* the kernel was
+# told to stand down -- and in nothing else.
+#
+# The `open` is kept apart from the theorem on purpose. `set_option ... in` applies to the single
+# command that follows it, so folding the two together would have aimed the option at the `open`
+# and left the theorem checked; that mistake makes the fixture's build fail for the wrong reason,
+# which is how it was caught.
+OPEN_TACTIC = "\nopen Lean Elab Tactic Meta\n"
+UNCHECKED_FALSE = """theorem probe_tc : False := by
+  run_tac do
+    let g ← getMainGoal
+    g.assign (mkConst ``True.intro)
+"""
 
 # Every lexeme `scripts/check_source_policy.py` forbids, each exercised by its own fixture below.
 # Testing three of the four and calling the rule covered was a real gap: deleting the `admit`
@@ -126,14 +147,47 @@ def fixture_2(root: pathlib.Path) -> None:
 def fixture_3(root: pathlib.Path) -> None:
     """A theorem admitted with the kernel's re-typechecking locally disabled."""
     prepend(root, MODEL, "import Lean\n")
-    append(root, MODEL, f"""
-open Lean Elab Tactic Meta
-set_option {SKIP_TC} true in
-theorem probe_tc : False := by
-  run_tac do
-    let g ← getMainGoal
-    g.assign (mkConst ``True.intro)
-""")
+    append(root, MODEL, OPEN_TACTIC + f"set_option {SKIP_TC} true in\n" + UNCHECKED_FALSE)
+
+
+def fixture_3b(root: pathlib.Path) -> None:
+    """The same, with the option written under Lean's identifier quoting.
+
+    Identical to fixture 3 except for the spelling of the option name, which Lean treats as the
+    same identifier. This is the shape that passed the entire gate before this round: the source
+    policy matched the plain name as raw bytes and did not match the quoted one, and the
+    environment audit had nothing to see because the declaration's axiom closure was empty. Both
+    layers fail on it now, for different reasons -- the policy because it matches names rather
+    than spellings, the audit because it asks the kernel again.
+    """
+    prepend(root, MODEL, "import Lean\n")
+    append(root, MODEL, OPEN_TACTIC + f"set_option {SKIP_TC_QUOTED} true in\n" + UNCHECKED_FALSE)
+
+
+def fixture_3c(root: pathlib.Path) -> None:
+    """The same, with the option set from `lakefile.toml` and no `set_option` in any source file.
+
+    This is the isolation fixture for the kernel re-check, and the reason the re-check exists
+    rather than another byte pattern: `scripts/check_source_policy.py` scans `.lean` files, so a
+    build option set in the build file is outside what it reads -- not by oversight but by its
+    definition. Nothing is misspelled here and nothing is hidden; the policy simply is not a check
+    of this. The audit is, because it re-adds every constant to the kernel under options it
+    constructs itself.
+    """
+    lake = root / "lakefile.toml"
+    text = lake.read_text(encoding="utf-8")
+    marker = '[["warningAsError", true]]'
+    if marker not in text:
+        raise AssertionError(
+            "lakefile.toml no longer sets leanOptions in the form this fixture edits; the fixture "
+            "must be updated rather than silently applying nothing"
+        )
+    lake.write_text(
+        text.replace(marker, f'[["warningAsError", true], ["{SKIP_TC}", true]]', 1),
+        encoding="utf-8",
+    )
+    prepend(root, MODEL, "import Lean\n")
+    append(root, MODEL, OPEN_TACTIC + UNCHECKED_FALSE)
 
 
 def fixture_4(root: pathlib.Path) -> None:
@@ -351,10 +405,32 @@ FIXTURES = [
         "title": "kernel re-typechecking locally disabled",
         "apply": fixture_3,
         "regen_manifest": True,
-        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 0, "gate": 1, "manifest": 0, "docs": None},
+        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 1, "gate": 1, "manifest": 0, "docs": None},
         "layer": "policy",
         "reason": f"forbidden lexeme `{SKIP_TC}`",
         "gate_reason": GATE_POLICY,
+    },
+    {
+        "id": "3b",
+        "mode": "3",
+        "title": "the same option under Lean's identifier quoting",
+        "apply": fixture_3b,
+        "regen_manifest": True,
+        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 1, "gate": 1, "manifest": 0, "docs": None},
+        "layer": "policy",
+        "reason": [f"forbidden lexeme `{SKIP_TC}`", "identifier-quoting characters removed"],
+        "gate_reason": GATE_POLICY,
+    },
+    {
+        "id": "3c",
+        "mode": "3",
+        "title": "the same option set from lakefile.toml, which the source policy does not read",
+        "apply": fixture_3c,
+        "regen_manifest": True,
+        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 1, "gate": 1, "manifest": 0, "docs": None},
+        "layer": "audit",
+        "reason": ["the kernel rejected 1 constant(s)", "probe_tc"],
+        "gate_reason": GATE_AUDIT,
     },
     {
         "id": "4",
@@ -670,7 +746,7 @@ STAGES = ["build", "imports", "policy", "audit", "gate", "manifest", "docs"]
 # more expensive: `scripts/check_doc_claims.py` compares this roster against the fixture table
 # published in reports/PROOF.md, so the same edit has to be made in three places, in one commit,
 # to go unnoticed. See "Trust boundary" in reports/PROOF.md.
-DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b", "7a", "7b", "7c", "7d", "8",
+DECLARED_RUNS = ("1", "2", "3", "3b", "3c", "4", "5", "6", "6b", "7a", "7b", "7c", "7d", "8",
                  "9a", "9b", "9c", "10a", "10b", "10c", "12a", "12b", "12c",
                  "15a", "15b", "15c", "16a", "16b", "16c", "16d",
                  "17", "18", "19a", "19b", "19c", "20a", "20b", "20c", "14", "11")
@@ -922,7 +998,7 @@ def main() -> int:
     ap.add_argument(
         "--expected-table",
         action="store_true",
-        help="print the report a passing run produces, without running the fixtures",
+        help="print the declared outcome table without executing fixtures",
     )
     args = ap.parse_args()
     root = pathlib.Path(args.root).resolve()
