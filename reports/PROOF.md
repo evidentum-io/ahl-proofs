@@ -68,6 +68,27 @@ if something is not on it, it is not machine-checked, whatever else these docume
    whose value must additionally equal `.github/workflows/ci.yml`'s.
 4. **The fixture roster**: the table below must list exactly the fixtures
    `scripts/regression_fixtures.py` declares, in order.
+5. **The install script published in `reports/TOOLCHAIN.md`.** That script is the one runnable
+   artefact this repository publishes and does not run — CI does not execute it, and neither do
+   the fixtures — and it silently drifted from the workflow once for exactly that reason. Two
+   checks now hold it:
+   * **It exists once, and it parses.** Exactly one `#!/bin/sh` block in the whole document,
+     inside the Install section, and `sh -n` on it exits 0. *This establishes syntax, not
+     behaviour*: it catches a block that has stopped being a valid shell script, or has gone
+     missing, or has been published twice with one copy stale. It says nothing about whether the
+     script installs the right toolchain or runs the right checks, because nothing here executes
+     it.
+   * **Its `# CI step N [key].` labels match the workflow.** Expanded, the labels must cover
+     `.github/workflows/ci.yml`'s steps exactly once each, in order, with each label's key
+     occurring in that step's `name`. A step added to, removed from or reordered within the
+     workflow while the script stays as it was fails this, with a line-by-line comparison in the
+     output. `.github/workflows/ci.yml` is the source of truth and is read structurally rather
+     than by regex over its text — by a small dependency-free reader that refuses anything outside
+     the shape this workflow has, cross-checked against PyYAML wherever that library happens to be
+     installed and never requiring it. *This establishes the order and the identity of the steps,
+     not that each step's contents are equivalent*: a label can point at the right step while the
+     shell under it does something else. That equivalence is not machine-checked, and is not
+     claimed to be.
 
 A claim whose pattern that script can no longer find is a failure there, not a silent skip, so
 rewording a checked sentence out of the checker's reach fails CI rather than escaping it.
@@ -76,8 +97,9 @@ rewording a checked sentence out of the checker's reach fails CI rather than esc
 not as a hedge: the mathematical account and every argument made in prose; the I-D and RFC section
 references; the lemma tables; the boundary text; the build timings; the host triple and local
 `lake` path recorded at the top of `reports/TOOLCHAIN.md`, which are a record of one past run on
-one machine and cannot be re-derived here; and the correctness of any English sentence about any
-of it. If a sentence here is wrong about the mathematics, no step of CI will say so. What CI can
+one machine and cannot be re-derived here; what the published install script actually *does* when
+executed, as opposed to that it parses and is labelled in step with CI; and the correctness of any
+English sentence about any of it. If a sentence here is wrong about the mathematics, no step of CI will say so. What CI can
 say is that the numbers, the pins and the transcripts are not stale, and it now does.
 
 ### What the four checks are for

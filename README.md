@@ -113,7 +113,10 @@ tests", lists all 12 runs with the exit status of every stage.
 
 A defined list of claims in this file, in `reports/PROOF.md` and in `reports/TOOLCHAIN.md` is
 itself checked in CI by `scripts/check_doc_claims.py`: four published transcripts, the counts, the
-toolchain pin and all four release-archive digests, and the fixture roster. That list is
+toolchain pin and all four release-archive digests, the fixture roster, and the install script
+`reports/TOOLCHAIN.md` publishes — which must be a single block that passes `sh -n`, and whose
+`# CI step N [key].` labels must cover the workflow's steps once each, in order, with
+`.github/workflows/ci.yml` read structurally as the source of truth. That list is
 enumerated exhaustively under "What is checked about this document" in `reports/PROOF.md`, and
 everything outside it — the mathematics, the section references, the build timings, the arguments
 — is maintained by hand and is not machine-checked.

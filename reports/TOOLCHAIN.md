@@ -82,7 +82,7 @@ Save this as `verify-ahl-proofs.sh` and run it with `sh verify-ahl-proofs.sh /pa
 # that job's step numbers. Exits nonzero at the first failure; nothing after a failure runs.
 set -eu
 
-# CI step 1 is `actions/checkout`; locally that is the clone you already have.
+# CI step 1 [actions/checkout]. In CI this is the checkout; locally, the clone you have.
 REPO="${1:-.}"
 cd "${REPO}"
 
@@ -94,18 +94,19 @@ EXPECTED_LEAN_COMMIT=68218e876d2a38b1985b8590fff244a83c321783
 
 PREFIX="$HOME/.local/lean-${EXPECTED_LEAN_VERSION}"
 
-# CI step 2. The hash manifest.
+# CI step 2 [Verify reports/PROOF.sha256]. The hash manifest.
 python3 scripts/gen_proof_sha256.py --check
 
-# CI step 3. The import invariant, on its own — not merely inside the gate at the end. CI runs
+# CI step 3 [Import invariant]. On its own — not merely inside the gate at the end. CI runs
 #            it here so a structural mistake fails in seconds instead of after an install and a
 #            build, and so that the first failure a reader sees is the first failure CI reports.
 python3 scripts/check_imports.py
 
-# CI step 4. The source policy, likewise on its own.
+# CI step 4 [Source policy]. Likewise on its own.
 python3 scripts/check_source_policy.py
 
-# CI step 5. lean-toolchain must name the release this script installs. Without this, a
+# CI step 5 [Cross-check lean-toolchain]. It must name the release this script installs.
+#            Without this check, a
 #            repointed lean-toolchain passes locally (the manifest was regenerated, so nothing
 #            else notices) and fails in CI — a green local run against a red CI run, in exactly
 #            the check this section exists for.
@@ -118,7 +119,8 @@ fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# CI step 6. Fetch the archive by its versioned release URL and compare the digest BEFORE
+# CI step 6 [Install Lean from the pinned]. Fetch the archive by its versioned release URL and
+#            compare the digest BEFORE
 #            unpacking. The URL selects a release; the digest is what pins the bytes. `-c` exits
 #            nonzero on a mismatch, and `set -e` stops the script here.
 curl -fsSL --retry 3 -o "${WORK}/${ASSET}" \
@@ -144,7 +146,7 @@ mv "$(dirname "$(dirname "${FOUND}")")" "${PREFIX}"
 PATH="${PREFIX}/bin:${PATH}"
 export PATH
 
-# CI step 7. The toolchain self-report. CI checks the version and release commit here; locally
+# CI step 7 [Toolchain self-report]. CI checks the version and release commit here; locally
 #            there is one more thing to check that CI gets for free from $GITHUB_PATH — that the
 #            `lean` which actually resolves is the one just installed. Both guards exit 1.
 if [ "$(command -v lean)" != "${PREFIX}/bin/lean" ]; then
@@ -162,7 +164,8 @@ case "${actual}" in
     ;;
 esac
 
-# CI steps 8-11. Build, the regression fixtures, the proof gate, the document-claim check.
+# CI steps 8-11 [lake build | Regression fixtures | Proof gate | Document claims].
+#            Build, the fixtures, the gate, the document-claim check.
 lake clean && time lake build
 python3 scripts/regression_fixtures.py
 ./scripts/check_axioms.sh

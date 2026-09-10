@@ -25,6 +25,14 @@ and compare it against these documents cannot rest on that.
 * **The fixture roster.** Every fixture `scripts/regression_fixtures.py` declares must have a row
   in the table in `reports/PROOF.md`, and that table must have no rows for fixtures that do not
   exist.
+* **The published install script.** `reports/TOOLCHAIN.md` publishes a runnable script that
+  nothing else in this repository executes — not CI, not the fixtures — and it drifted from the
+  workflow once for exactly that reason. Two checks now hold it: there is exactly one `#!/bin/sh`
+  block, inside the Install section, and it passes `sh -n`; and its `# CI step N [key].` labels
+  cover the workflow's steps once each, in order, with each key occurring in that step's name.
+  `.github/workflows/ci.yml` is the source of truth and is read structurally, not by regex over
+  its text — see `parse_workflow_steps`, which is dependency-free and cross-checked against
+  PyYAML wherever that happens to be installed.
 
 **What is *not* checked here, and is not claimed to be.** Everything else in those documents —
 the mathematical account, the I-D section references, the lemma tables, the boundary text, the
@@ -45,6 +53,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 
 
 # The SHA-256 of every Lean 4.31.0 release archive `reports/TOOLCHAIN.md` offers, recorded here so
@@ -80,6 +89,10 @@ DECLARED_TRANSCRIPTS = (
     "the manifest --check line",
     "the regression-fixture table",
 )
+DECLARED_STRUCTURAL_CHECKS = (
+    "the published install script is a single block and passes sh -n",
+    "the published install script's CI step labels match .github/workflows/ci.yml",
+)
 DECLARED_CLAIM_LABELS = frozenset({
     "constant and theorem counts",
     "theorem count",
@@ -94,6 +107,270 @@ DECLARED_CLAIM_LABELS = frozenset({
     "the version in the recorded toolchain self-report",
     "the lake job count",
 })
+
+
+INSTALL_HEADING = "## Install — the same procedure a human runs and CI runs"
+WORKFLOW = ".github/workflows/ci.yml"
+WORKFLOW_JOB = "lean"
+
+
+class WorkflowParseError(Exception):
+    """The workflow could not be read structurally. Fail closed; never guess."""
+
+
+def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[str]:
+    """The ordered `name` of every step of `job`, read structurally, without a YAML library.
+
+    PyYAML is not in the standard library and this repository takes no dependencies, so this is a
+    deliberately small reader for the shape `.github/workflows/ci.yml` actually has: block
+    mappings, one block sequence of step mappings, double-quoted or plain scalars, and block
+    scalars (`|`, `>`) whose contents are skipped by indentation. It is *not* a YAML parser and
+    does not pretend to be: anything outside that shape raises `WorkflowParseError` rather than
+    being silently reinterpreted. Where PyYAML happens to be installed, `parse_workflow_steps` is
+    cross-checked against it (see `workflow_step_names`), so this reader being wrong is itself
+    caught on any machine that has the library — without ever requiring it.
+    """
+    lines = text.splitlines()
+
+    def indent_of(i: int) -> int:
+        return len(lines[i]) - len(lines[i].lstrip(" "))
+
+    def is_skippable(i: int) -> bool:
+        s = lines[i].strip()
+        return not s or s.startswith("#")
+
+    # jobs: -> <job>: -> steps:
+    i, n = 0, len(lines)
+    while i < n and (is_skippable(i) or lines[i].rstrip() != "jobs:"):
+        i += 1
+    if i == n:
+        raise WorkflowParseError("no top-level `jobs:` mapping")
+    jobs_indent, i = indent_of(i), i + 1
+
+    job_indent = None
+    while i < n:
+        if is_skippable(i):
+            i += 1
+            continue
+        ind = indent_of(i)
+        if ind <= jobs_indent:
+            raise WorkflowParseError(f"job `{job}` not found under `jobs:`")
+        if job_indent is None:
+            job_indent = ind
+        if ind == job_indent and lines[i].strip() == f"{job}:":
+            break
+        i += 1
+    else:
+        raise WorkflowParseError(f"job `{job}` not found under `jobs:`")
+
+    i += 1
+    steps_indent = None
+    while i < n:
+        if is_skippable(i):
+            i += 1
+            continue
+        ind = indent_of(i)
+        if ind <= job_indent:
+            raise WorkflowParseError(f"job `{job}` has no `steps:`")
+        if lines[i].strip() == "steps:":
+            steps_indent = ind
+            break
+        i += 1
+    if steps_indent is None:
+        raise WorkflowParseError(f"job `{job}` has no `steps:`")
+
+    def unquote(v: str) -> str:
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            return v[1:-1]
+        return v
+
+    names: list[str] = []
+    item_indent = None
+    i += 1
+    while i < n:
+        if is_skippable(i):
+            i += 1
+            continue
+        ind = indent_of(i)
+        if ind <= steps_indent:
+            break                                    # the sequence ended
+        stripped = lines[i].strip()
+        if stripped.startswith("- "):
+            if item_indent is None:
+                item_indent = ind
+            elif ind != item_indent:
+                raise WorkflowParseError(
+                    f"line {i + 1}: step list item at indent {ind}, expected {item_indent}"
+                )
+            names.append(None)                       # placeholder for this step
+            stripped = stripped[2:].strip()
+            key_indent = ind + 2
+        elif item_indent is not None and ind >= item_indent + 2:
+            key_indent = ind
+        else:
+            raise WorkflowParseError(f"line {i + 1}: not understood inside `steps:`: {stripped!r}")
+
+        if ":" in stripped:
+            key, _, value = stripped.partition(":")
+            key, value = key.strip(), value.strip()
+            if value in ("|", ">", "|-", ">-", "|+", ">+"):
+                # Block scalar: skip everything indented deeper than the key that introduced it.
+                i += 1
+                while i < n and (is_skippable(i) or indent_of(i) > key_indent):
+                    i += 1
+                continue
+            if key == "name":
+                if not names:
+                    raise WorkflowParseError(f"line {i + 1}: `name:` outside any step")
+                names[-1] = unquote(value)
+        i += 1
+
+    if not names:
+        raise WorkflowParseError(f"job `{job}` declares no steps")
+    unnamed = [k + 1 for k, v in enumerate(names) if v is None]
+    if unnamed:
+        raise WorkflowParseError(f"step(s) {unnamed} have no `name:`")
+    return names
+
+
+def workflow_step_names(root: pathlib.Path) -> list[str]:
+    """`parse_workflow_steps`, cross-checked against PyYAML when it happens to be installed."""
+    text = (root / WORKFLOW).read_text(encoding="utf-8")
+    names = parse_workflow_steps(text)
+    try:
+        import yaml  # noqa: PLC0415 — optional; never required
+    except ImportError:
+        return names
+    reference = [s.get("name") for s in yaml.safe_load(text)["jobs"][WORKFLOW_JOB]["steps"]]
+    if reference != names:
+        raise WorkflowParseError(
+            "the dependency-free workflow reader disagrees with PyYAML:\n"
+            f"  reader: {names}\n  PyYAML: {reference}"
+        )
+    return names
+
+
+LABEL_RE = re.compile(r"^#\s*CI steps?\s+(\d+)(?:\s*-\s*(\d+))?\s*\[([^\]]*)\]\s*\.")
+
+
+def extract_install_script(doc: str, problems: list[str]) -> str | None:
+    """The one `#!/bin/sh` block published in the Install section, or None with a problem filed.
+
+    Same uniqueness rule as the transcripts: exactly one such block in the whole document, inside
+    the section that is supposed to hold it. A second copy is how a stale script sits beside a
+    correct one, and no block at all is how the section quietly stops publishing a procedure while
+    the prose goes on describing it.
+    """
+    hits = [(off, body) for off, body in fenced_blocks(doc)
+            if body.lstrip().startswith("#!/bin/sh")]
+    if len(hits) != 1:
+        problems.append(
+            f"reports/TOOLCHAIN.md: expected exactly one `#!/bin/sh` block (the install script), "
+            f"found {len(hits)} — a procedure that is missing, or published twice, cannot be the "
+            "one this document claims CI matches"
+        )
+        return None
+    off, body = hits[0]
+    span = section_span(doc, INSTALL_HEADING)
+    if span is None:
+        problems.append(f"reports/TOOLCHAIN.md: section {INSTALL_HEADING!r} is gone")
+    elif not (span[0] <= off < span[1]):
+        problems.append(
+            f"reports/TOOLCHAIN.md: the install script is published outside {INSTALL_HEADING!r}"
+        )
+    return body
+
+
+def check_install_script_syntax(script: str, problems: list[str]) -> None:
+    """`sh -n` the published script.
+
+    **What this does not establish.** `sh -n` parses; it does not run. It catches a block that
+    stopped being a valid shell script — an unbalanced quote, a broken `case`, a mangled
+    here-doc — and nothing at all about whether the script installs the right toolchain or runs
+    the right checks. That the *steps* are the right ones, in the right order, is the separate
+    label check below; that they do what they say remains unverified, because nothing here
+    downloads 500 MB of toolchain to find out.
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as fh:
+        fh.write(script)
+        path = fh.name
+    try:
+        proc = subprocess.run(["sh", "-n", path], capture_output=True, text=True)
+        if proc.returncode != 0:
+            problems.append(
+                "reports/TOOLCHAIN.md: the published install script is not valid shell "
+                f"(`sh -n` exited {proc.returncode}):\n{(proc.stdout + proc.stderr).strip()}"
+            )
+    finally:
+        pathlib.Path(path).unlink(missing_ok=True)
+
+
+def check_install_script_labels(script: str, ci_steps: list[str], problems: list[str]) -> None:
+    """The script's `# CI step N [key].` labels against the workflow's actual step sequence.
+
+    Each block of the script is labelled with the CI step it corresponds to and a key that must
+    occur in that step's `name`. The labels, expanded, must cover step 1 to step N exactly once
+    each, in order. That is what catches the failure this check exists for: a step added to,
+    removed from, or reordered within the workflow while the published script stays as it was.
+
+    **What this does not establish.** It compares *positions and names*, not behaviour: a label
+    can point at the right step while the shell under it does something else entirely. Equivalence
+    of what each step does is not machine-checked and is not claimed to be.
+    """
+    labels: list[tuple[int, int, list[str]]] = []
+    for line in script.splitlines():
+        m = LABEL_RE.match(line.strip())
+        if m:
+            lo = int(m.group(1))
+            hi = int(m.group(2)) if m.group(2) else lo
+            keys = [k.strip() for k in m.group(3).split("|")]
+            labels.append((lo, hi, keys))
+
+    if not labels:
+        problems.append(
+            "reports/TOOLCHAIN.md: the install script carries no `# CI step N [key].` labels, so "
+            "its correspondence to the workflow cannot be checked at all"
+        )
+        return
+
+    covered: list[int] = []
+    keyed: dict[int, str] = {}
+    for lo, hi, keys in labels:
+        span = list(range(lo, hi + 1))
+        if len(keys) != len(span):
+            problems.append(
+                f"reports/TOOLCHAIN.md: label `CI step{'s' if hi > lo else ''} {lo}"
+                f"{f'-{hi}' if hi > lo else ''}` covers {len(span)} step(s) but names "
+                f"{len(keys)} key(s): {keys}"
+            )
+            return
+        covered += span
+        keyed.update(dict(zip(span, keys)))
+
+    expected = list(range(1, len(ci_steps) + 1))
+    if covered != expected:
+        problems.append(
+            "reports/TOOLCHAIN.md: the install script's CI step labels do not cover the "
+            f"workflow's steps exactly once, in order.\n"
+            f"      workflow has {len(ci_steps)} step(s): {expected}\n"
+            f"      script labels cover:            {covered}"
+        )
+
+    rows, mismatched = [], False
+    for number in expected:
+        name = ci_steps[number - 1]
+        key = keyed.get(number)
+        ok = key is not None and key.lower() in name.lower()
+        mismatched = mismatched or not ok
+        rows.append(f"      {'ok ' if ok else 'BAD'} {number:>2}  ci.yml: {name}\n"
+                    f"               script: [{key}]")
+    if mismatched:
+        problems.append(
+            "reports/TOOLCHAIN.md: a label's key does not occur in the name of the workflow step "
+            "it claims to mirror — the workflow's steps and the published script have diverged:\n"
+            + "\n".join(rows)
+        )
 
 
 def run(cmd: list[str], cwd: pathlib.Path) -> tuple[int, str]:
@@ -189,6 +466,32 @@ def main() -> int:
             return 1
         docs[name] = path.read_text(encoding="utf-8")
 
+    # ---------------------------------------------------------------- structural checks --------
+    # First, because it needs nothing else and because a missing or broken script should say so
+    # rather than surfacing as some later check's confusion. This is the artefact nothing in this
+    # repository executes — not CI, not the fixtures — which is exactly why it drifted once while
+    # its description said otherwise.
+    try:
+        ci_steps = workflow_step_names(root)
+    except WorkflowParseError as e:
+        print(f"check_doc_claims.py: FAIL — could not read {WORKFLOW} structurally: {e}",
+              file=sys.stderr)
+        return 1
+
+    structural_run: list[str] = []
+    install_script = extract_install_script(docs["reports/TOOLCHAIN.md"], problems)
+    structural_run.append(DECLARED_STRUCTURAL_CHECKS[0])
+    if install_script is not None:
+        check_install_script_syntax(install_script, problems)
+        check_install_script_labels(install_script, ci_steps, problems)
+    structural_run.append(DECLARED_STRUCTURAL_CHECKS[1])
+    if problems:
+        print("check_doc_claims.py: FAIL — the published install script does not hold up",
+              file=sys.stderr)
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
+        return 1
+
     # ---------------------------------------------------------------- computed reality ----------
     # Order matters here, and it was wrong once. A cold build runs FIRST, and everything else is
     # measured after it. The previous version ran the gate against whatever `.olean`s happened to
@@ -251,9 +554,8 @@ def main() -> int:
     # The ASSET/DIGEST pair inside reports/TOOLCHAIN.md's install script, which is what a reader
     # actually runs. Only the table above it used to be checked, so a mistyped digest in the
     # script itself would have gone unnoticed — and did, once, before this check existed.
-    toolchain_doc = docs["reports/TOOLCHAIN.md"]
-    script_asset = re.search(r"^ASSET=(\S+)$", toolchain_doc, flags=re.M)
-    script_digest = re.search(r"^DIGEST=([0-9a-f]{64})$", toolchain_doc, flags=re.M)
+    script_asset = re.search(r"^ASSET=(\S+)$", install_script, flags=re.M)
+    script_digest = re.search(r"^DIGEST=([0-9a-f]{64})$", install_script, flags=re.M)
     if not script_asset or not script_digest:
         problems.append(
             "reports/TOOLCHAIN.md: the install script no longer declares an ASSET= and a "
@@ -416,6 +718,11 @@ def main() -> int:
     }
     actual_labels = {label for _, _, _, label in claims}
     roster_problems = []
+    if tuple(structural_run) != DECLARED_STRUCTURAL_CHECKS:
+        roster_problems.append(
+            f"structural-check set does not match the declared one: expected "
+            f"{list(DECLARED_STRUCTURAL_CHECKS)}, got {structural_run}"
+        )
     if tuple(label for _, _, label, _ in transcripts) != DECLARED_TRANSCRIPTS:
         roster_problems.append(
             f"transcript set does not match the declared one: expected "
@@ -484,7 +791,10 @@ def main() -> int:
         return 1
 
     print(
-        f"document claims hold: {len(transcripts)} published transcript(s) matched exactly (one "
+        f"document claims hold: {len(DECLARED_STRUCTURAL_CHECKS)} structural check(s) on the "
+        f"published install script passed (single block, sh -n, and CI step labels against all "
+        f"{len(ci_steps)} workflow steps); "
+        f"{len(transcripts)} published transcript(s) matched exactly (one "
         f"block each, in its own section); the build transcript matched on modules "
         f"({len(built_modules)}) and job count ({jobs}); {len(claims)} numeric/pin claim(s) "
         f"matched ({theorems} theorems in {theorem_files} files, {constants} constants, "
