@@ -211,7 +211,7 @@ echo "ALL CHECKS PASSED with the verified toolchain at ${PREFIX}"
 
 The script exits 0 only if every step passed: the three toolchain-free checks, the pin
 cross-check, the archive digest, the `lean` on `PATH` being the one just installed and reporting
-the expected version and release commit, the cold build, 31 fixture runs covering 15 failure modes,
+the expected version and release commit, the cold build, 35 fixture runs covering 16 failure modes,
 the three-layer proof gate, and the document-claim check.
 
 **The equivalence claimed in this section is between the `lean` job of

@@ -28,7 +28,7 @@ document" below. The four:
   declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
   because nothing was checked. It is a layer on top of the environment audit and never a
   substitute for it.
-* **The regression fixtures** — `scripts/regression_fixtures.py`. 31 fixture runs covering 15
+* **The regression fixtures** — `scripts/regression_fixtures.py`. 35 fixture runs covering 16
   failure modes of this repository, each applied to a throwaway copy of it, each required to fail
   *and* to fail at the layer that owns it, *and* to fail `./scripts/check_axioms.sh` itself with
   the diagnostic that names that layer. This is what keeps the other three honest: a layer that stopped working
@@ -177,15 +177,24 @@ if something is not on it, it is not machine-checked, whatever else these docume
      different data are equal here. What it does establish is that no command appears on one side
      and not the other — which is how `lake --version`, present in CI's self-report step and
      missing from the published script, was found.
-   * **Every workflow step fits a strict schema.** A step is `name` plus exactly one of `run:` or
-     a `uses:` pinned to a 40-character commit SHA — and nothing else. Not a list of dangerous
+   * **The workflow, the job and every step fit a strict schema.** At the top level the admitted
+     keys are `name`, `on`, `jobs`; the triggers must be exactly `push` and `pull_request`, each
+     without a filter, which is what makes "every push, any branch" a checked claim rather than
+     prose; the declared jobs must be exactly `lean`; that job may declare only `runs-on`,
+     `timeout-minutes`, `env` and `steps`, its `runs-on` must be the declared runner image, and
+     its `env` must be exactly the four toolchain values — a `PATH` there would silently decide
+     which `python3` and which `lean` the steps see. A step is `name` plus exactly one of `run:`
+     or a `uses:` pinned to a 40-character commit SHA — and nothing else. Not a list of dangerous
      fields but a list of admitted ones, so `if:`, `continue-on-error:`, `shell:`,
      `working-directory:`, `env:`, `with:` and anything GitHub adds later are all refused until
      someone decides what this checker should make of them. This is here because its absence was
      the largest hole found in twelve rounds: `if: false` on the regression-fixtures step, with
      the manifest regenerated as any author would regenerate it, produced a green CI run that
      never executed a single fixture — the label check saw the step, the command comparison saw
-     the same commands, and nothing saw that the step would not run.
+     the same commands, and nothing saw that the step would not run. The same schema was then
+     found to be closed at the wrong *depth*: `if: false` beside `runs-on:` disables the job and
+     every step-level check goes on reporting that the steps are exactly right, so the levels
+     above a step are now admitted-key lists too.
    * **Its `# CI step N [key].` labels match the workflow.** Expanded, the labels must cover
      `.github/workflows/ci.yml`'s steps exactly once each, in order, with each label's key
      occurring in that step's `name`. A step added to, removed from or reordered within the
@@ -247,7 +256,9 @@ one, and it is not a guarantee; naming the bar is the honest thing to do with it
 
 **Every roster is in the repository it governs, and that includes the coverage rule's.**
 `DECLARED_AUXILIARY`, `DECLARED_YAML`, `DECLARED_BUILD_FILES`, `EXCLUDED_DIRS` and the
-covered-suffix set all sit in `scripts/check_imports.py`; `IGNORED_COMMANDS`, `NEVER_IGNORABLE` and `DECLARED_PLATFORM_BRANCHES` sit in
+covered-suffix set all sit in `scripts/check_imports.py`; `IGNORED_COMMANDS`, `NEVER_IGNORABLE`, `DECLARED_PLATFORM_BRANCHES` and the workflow, job and
+step schemas (`WORKFLOW_SCHEMA_KEYS`, `JOB_SCHEMA_KEYS`, `STEP_SCHEMA_KEYS`,
+`DECLARED_JOBS`, `DECLARED_TRIGGERS`, `DECLARED_RUNNER`, `DECLARED_JOB_ENV`) sit in
 `scripts/check_doc_claims.py`. Adding a directory to the exclusions, or a file to either declared
 list, is a one-line change that re-opens exactly the area the rule closes — and nothing but review
 of the diff will say so. This is not a defect in the rule; it is the same same-commit limit every
@@ -498,15 +509,16 @@ a library that just finished building — the two conditions cannot both hold.
 
 ### Required regression tests
 
-**31 fixture runs covering 15 failure modes** — fifteen ways for this pipeline to be wrong;
+**35 fixture runs covering 16 failure modes** — sixteen ways for this pipeline to be wrong;
 several modes take more than one run because the same mistake has more than one spelling. Mode 6
 is exercised twice with a different set of layers active (6 and 6b), mode 7 once per forbidden
 lexeme (7a–7d), because a policy rule that no fixture exercises can be deleted without turning
 anything red, mode 9 once per place a Lean file has actually turned up unclassified (9a–9c), mode
 10 once per directory that classification excludes (10a–10c), mode 12 once per kind of executable
 artifact that is not Lean (12a–12c), mode 13 once per shell spelling that used to scan as no
-command at all (13a–13e), and mode 15 once per step field that changes whether a step runs
-(15a–15c). Each run must make the pipeline exit nonzero **and must be caught by the layer
+command at all (13a–13e), mode 15 once per step field that changes whether a step runs
+(15a–15c), and mode 16 once per way of changing the job or the workflow above the step level
+(16a–16d). Each run must make the pipeline exit nonzero **and must be caught by the layer
 responsible for it** — a fixture that failed for some unrelated reason would satisfy "exits
 nonzero" and prove nothing.
 
@@ -589,10 +601,14 @@ exited 0, `1` = exited nonzero, `-` = not run):
      15a      docs         0         0         0         0         0         0         1   ok
      15b      docs         0         0         0         0         0         0         1   ok
      15c      docs         0         0         0         0         0         0         1   ok
+     16a      docs         0         0         0         0         0         0         1   ok
+     16b      docs         0         0         0         0         0         0         1   ok
+     16c      docs         0         0         0         0         0         0         1   ok
+     16d      docs         0         0         0         0         0         0         1   ok
       14   imports         0         1         0         0         1         0         -   ok
       11      docs         0         0         0         0         0         0         1   ok
 
-all 31 fixture run(s) covering 15 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
+all 35 fixture run(s) covering 16 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
 ```
 
 | # | Fragment | Layer under test | Why that layer, and why not another |
@@ -626,6 +642,10 @@ all 31 fixture run(s) covering 15 failure mode(s) behaved as declared: each brok
 | 15a | `if: false` on the regression-fixtures step | document claims | The worst hole found in twelve rounds: with the manifest regenerated as any author would, CI went green having never run a fixture. The label check saw the step in place, the command comparison saw the same commands, and that the step would not run was visible to nothing. The step schema now admits `name` plus exactly one of `run` or a SHA-pinned `uses`, and refuses everything else. |
 | 15b | `continue-on-error: true` on the proof gate | document claims | The same, one field over: the gate would run, fail, and not fail the job. |
 | 15c | `shell: bash` on a step | document claims | Harmless in itself, and refused anyway — the schema does not enumerate the dangerous fields, it admits only the two this workflow uses, so a field GitHub adds tomorrow is refused before anyone has to think about what it means. |
+| 16a | `if: false` beside `runs-on:` | document claims | The step schema was closed at the wrong depth. Disabling the *job* leaves every step-level check reporting that the steps are exactly right, and CI goes green having run nothing at all. |
+| 16b | `continue-on-error: true` as a job key | document claims | The same at job level: everything runs, nothing fails the job. |
+| 16c | `permissions: write-all` as a top-level key | document claims | The workflow's own level was unguarded too. Admitted keys are `name`, `on`, `jobs`; anything else is refused before someone has to decide what it means. |
+| 16d | `runs-on: self-hosted` | document claims | The image is not pinned by digest and is trusted unverified — the schema does not fix that and does not pretend to. What it does is make a change visible: swapping the runner changes everything this repository says about reproducibility. |
 | 14 | `lake-manifest.json` removed from `FIXED_FILES` in `scripts/gen_proof_sha256.py` | covered-artifact coverage | That file carries none of the covered suffixes, so the suffix rule says nothing about it, and the only thing that used to protect it was a list inside the very script an edit would touch — dropping the entry produced a shorter manifest and a green run. `scripts/check_imports.py` now declares the build and pin files separately and requires the two lists to be equal. |
 | 11 | An extra `FreeBSD/x86_64)` branch in the published install script, selecting the Linux archive | document claims | Every required branch and the `*)` default remain, and the set of archives offered is unchanged — which is why the previous version of the platform check passed it. It asked whether the recorded platforms were covered, not whether anything else was, so a platform quietly stopped being refused and started receiving another platform's build. The branch set must now equal the declared one exactly. This is the one fixture whose subject lives in a document rather than in the sources, so it is also the only one that runs `scripts/check_doc_claims.py`. |
 

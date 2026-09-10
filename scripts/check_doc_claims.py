@@ -120,6 +120,26 @@ WORKFLOW_JOB = "lean"
 # The only fields a step of this workflow may declare. See `parse_workflow_steps` for why the
 # list is this short.
 STEP_SCHEMA_KEYS = frozenset({"name", "run", "uses"})
+
+# The same treatment for the two levels above a step, because the schema was closed at the wrong
+# depth: `if: false` beside `runs-on:` disables the whole job, and every step-level check goes on
+# reporting that the steps are exactly right. `strategy:`, `continue-on-error:`, `container:` and
+# `services:` do their own versions of the same thing, and `on:` decides whether the workflow runs
+# at all. Admitted keys, never a list of dangerous ones — a key GitHub adds tomorrow is refused
+# before anyone has to decide what it means.
+WORKFLOW_SCHEMA_KEYS = frozenset({"name", "on", "jobs"})
+JOB_SCHEMA_KEYS = frozenset({"runs-on", "timeout-minutes", "env", "steps"})
+DECLARED_JOBS = ("lean",)
+DECLARED_TRIGGERS = frozenset({"push", "pull_request"})
+# The runner image. Not pinned by digest and named in reports/PROOF.md as trusted unverified — the
+# schema does not fix that and does not pretend to. What it does is make a change to it visible:
+# swapping the image changes everything this repository says about reproducibility.
+DECLARED_RUNNER = "ubuntu-latest"
+# The job's environment. A `PATH` here would silently decide which `python3` and which `lean` run,
+# so the set is exact rather than open.
+DECLARED_JOB_ENV = frozenset({
+    "EXPECTED_LEAN_VERSION", "EXPECTED_LEAN_COMMIT", "LEAN_ASSET", "LEAN_ASSET_SHA256",
+})
 USES_PIN_RE = re.compile(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}")
 
 
@@ -149,13 +169,100 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
         s = lines[i].strip()
         return not s or s.startswith("#")
 
-    # jobs: -> <job>: -> steps:
-    i, n = 0, len(lines)
-    while i < n and (is_skippable(i) or lines[i].rstrip() != "jobs:"):
+    n = len(lines)
+
+    def unquote(v: str) -> str:
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            return v[1:-1]
+        return v
+
+    def child_keys(start: int, parent_indent: int) -> tuple[dict[str, str], dict[str, bool]]:
+        """Immediate `key: value` children of the block opened at `start`, and whether each has a
+        body of its own (nested lines or a non-empty value)."""
+        values: dict[str, str] = {}
+        has_body: dict[str, bool] = {}
+        child_indent = None
+        last_key = None
+        k = start + 1
+        while k < n:
+            if is_skippable(k):
+                k += 1
+                continue
+            ind = indent_of(k)
+            if ind <= parent_indent:
+                break
+            s = lines[k].strip()
+            if child_indent is None:
+                child_indent = ind
+            if ind == child_indent:
+                if ":" not in s:
+                    raise WorkflowParseError(f"line {k + 1}: not a `key: value` line: {s!r}")
+                key, _, value = s.partition(":")
+                last_key = key.strip()
+                values[last_key] = value.strip()
+                has_body[last_key] = bool(value.strip())
+            elif last_key is not None:
+                has_body[last_key] = True
+            k += 1
+        return values, has_body
+
+    # ---- the workflow's own top level ---------------------------------------------------------
+    top_values: dict[str, str] = {}
+    on_line = None
+    jobs_line = None
+    i = 0
+    while i < n:
+        if is_skippable(i) or indent_of(i) != 0:
+            i += 1
+            continue
+        s = lines[i].strip()
+        if ":" not in s:
+            raise WorkflowParseError(f"line {i + 1}: not a `key: value` line at top level: {s!r}")
+        key = s.partition(":")[0].strip()
+        top_values[key] = s.partition(":")[2].strip()
+        if key == "on":
+            on_line = i
+        if key == "jobs":
+            jobs_line = i
         i += 1
-    if i == n:
-        raise WorkflowParseError("no top-level `jobs:` mapping")
-    jobs_indent, i = indent_of(i), i + 1
+    extra_top = set(top_values) - WORKFLOW_SCHEMA_KEYS
+    if extra_top:
+        raise WorkflowParseError(
+            f"the workflow declares top-level key(s) {sorted(extra_top)}, which its schema does "
+            f"not admit. Allowed: {sorted(WORKFLOW_SCHEMA_KEYS)}."
+        )
+    missing_top = WORKFLOW_SCHEMA_KEYS - set(top_values)
+    if missing_top:
+        raise WorkflowParseError(f"the workflow has no {sorted(missing_top)}")
+
+    # `on:` decides whether any of this runs. The triggers are exact, and each must carry no
+    # filter of its own: a `branches:` list under `push` is how a push to a branch with no open
+    # pull request went unchecked once already.
+    triggers, trigger_bodies = child_keys(on_line, 0)
+    if set(triggers) != DECLARED_TRIGGERS:
+        raise WorkflowParseError(
+            f"the workflow triggers on {sorted(triggers)}, expected exactly "
+            f"{sorted(DECLARED_TRIGGERS)}"
+        )
+    filtered = sorted(k for k, v in trigger_bodies.items() if v)
+    if filtered:
+        raise WorkflowParseError(
+            f"trigger(s) {filtered} carry a filter; this workflow must run on every push (any "
+            "branch) and every pull request, which is what README.md and reports/PROOF.md claim"
+        )
+
+    # ---- jobs -----------------------------------------------------------------------------
+    job_names, _ = child_keys(jobs_line, 0)
+    if tuple(sorted(job_names)) != tuple(sorted(DECLARED_JOBS)):
+        raise WorkflowParseError(
+            f"the workflow declares job(s) {sorted(job_names)}, expected exactly "
+            f"{sorted(DECLARED_JOBS)}; an undeclared job runs whatever it likes"
+        )
+
+    i = jobs_line
+    jobs_indent = 0
+    i += 1
 
     job_indent = None
     while i < n:
@@ -173,6 +280,40 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
     else:
         raise WorkflowParseError(f"job `{job}` not found under `jobs:`")
 
+    job_line = i
+    job_values, _ = child_keys(job_line, job_indent)
+    extra_job = set(job_values) - JOB_SCHEMA_KEYS
+    if extra_job:
+        raise WorkflowParseError(
+            f"job `{job}` declares {sorted(extra_job)}, which its schema does not admit. "
+            f"Allowed: {sorted(JOB_SCHEMA_KEYS)}. A key outside the schema may change whether or "
+            "how the job runs — `if:`, `strategy:`, `continue-on-error:`, `container:` and "
+            "`services:` all do — so it is refused until this checker knows what to make of it."
+        )
+    missing_job = JOB_SCHEMA_KEYS - set(job_values)
+    if missing_job:
+        raise WorkflowParseError(f"job `{job}` has no {sorted(missing_job)}")
+    runner = unquote(job_values["runs-on"])
+    if runner != DECLARED_RUNNER:
+        raise WorkflowParseError(
+            f"job `{job}` runs on {runner!r}, not the declared {DECLARED_RUNNER!r}. The image is "
+            "not pinned by digest and is trusted unverified (see \"Trust boundary\" in "
+            "reports/PROOF.md); changing it changes everything this repository says about "
+            "reproducibility, so it may not change unnoticed."
+        )
+    env_line = next(
+        (k for k in range(job_line + 1, n)
+         if not is_skippable(k) and lines[k].strip() == "env:"), None)
+    if env_line is None:
+        raise WorkflowParseError(f"job `{job}` has no `env:` block")
+    env_values, _ = child_keys(env_line, indent_of(env_line))
+    if set(env_values) != DECLARED_JOB_ENV:
+        raise WorkflowParseError(
+            f"job `{job}` sets environment {sorted(env_values)}, expected exactly "
+            f"{sorted(DECLARED_JOB_ENV)}; a variable here decides what the steps see, `PATH` "
+            "above all"
+        )
+
     i += 1
     steps_indent = None
     while i < n:
@@ -188,12 +329,6 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
         i += 1
     if steps_indent is None:
         raise WorkflowParseError(f"job `{job}` has no `steps:`")
-
-    def unquote(v: str) -> str:
-        v = v.strip()
-        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-            return v[1:-1]
-        return v
 
     def check_step_name(value: str, lineno: int) -> str:
         """Accept only a plain or simply-quoted scalar. Anything a real YAML parser would

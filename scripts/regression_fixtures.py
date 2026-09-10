@@ -205,6 +205,21 @@ def append_to_step(payload: str):
     return apply
 
 
+def edit_workflow(old: str, new: str):
+    """A change above the step level: a job key, a top-level key, or the runner image.
+
+    The step schema was closed at the wrong depth. `if: false` beside `runs-on:` disables the
+    whole job while every step-level check goes on reporting that the steps are exactly right;
+    `runs-on:` decides which machine everything runs on and is not pinned by digest.
+    """
+    def apply(root: pathlib.Path) -> None:
+        wf = root / ".github" / "workflows" / "ci.yml"
+        t = wf.read_text(encoding="utf-8")
+        assert t.count(old) == 1, f"anchor {old!r} not found exactly once in the workflow"
+        wf.write_text(t.replace(old, new), encoding="utf-8")
+    return apply
+
+
 def add_step_field(field: str):
     """A field added to a workflow step that the schema does not admit."""
     def apply(root: pathlib.Path) -> None:
@@ -508,6 +523,33 @@ FIXTURES = [
     ]
 ] + [
     {
+        "id": f"16{suffix}",
+        "mode": "16",
+        "title": title,
+        "apply": edit_workflow(anchor, replacement),
+        "regen_manifest": True,
+        "expect": {"build": 0, "imports": 0, "policy": 0, "audit": 0, "gate": 0, "manifest": 0,
+                   "docs": 1},
+        "layer": "docs",
+        "reason": [needle],
+        "gate_reason": "",
+    }
+    for suffix, title, anchor, replacement, needle in [
+        ("a", "if: false on the job itself",
+         "    runs-on: ubuntu-latest\n", "    if: false\n    runs-on: ubuntu-latest\n",
+         "job `lean` declares ['if']"),
+        ("b", "an undeclared job key",
+         "    timeout-minutes: 25\n", "    timeout-minutes: 25\n    continue-on-error: true\n",
+         "job `lean` declares ['continue-on-error']"),
+        ("c", "an undeclared top-level workflow key",
+         "jobs:\n", "permissions: write-all\n\njobs:\n",
+         "top-level key(s) ['permissions']"),
+        ("d", "a different runner image",
+         "runs-on: ubuntu-latest", "runs-on: self-hosted",
+         "runs on 'self-hosted', not the declared 'ubuntu-latest'"),
+    ]
+] + [
+    {
         "id": "14",
         "mode": "14",
         "title": "an entry removed from the manifest's mandatory file list",
@@ -564,8 +606,10 @@ STAGES = ["build", "imports", "policy", "audit", "gate", "manifest", "docs"]
 # to go unnoticed. See "Trust boundary" in reports/PROOF.md.
 DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b", "7a", "7b", "7c", "7d", "8",
                  "9a", "9b", "9c", "10a", "10b", "10c", "12a", "12b", "12c",
-                 "13a", "13b", "13c", "13d", "13e", "15a", "15b", "15c", "14", "11")
-DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15")
+                 "13a", "13b", "13c", "13d", "13e", "15a", "15b", "15c",
+                 "16a", "16b", "16c", "16d", "14", "11")
+DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14",
+                  "15", "16")
 REQUIRED_KEYS = {
     "id", "mode", "title", "apply", "regen_manifest", "expect", "layer", "reason", "gate_reason",
 }
