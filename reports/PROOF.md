@@ -28,19 +28,40 @@ document" below. The four:
   declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
   because nothing was checked. It is a layer on top of the environment audit and never a
   substitute for it.
-* **The regression fixtures** — `scripts/regression_fixtures.py`. 19 fixture runs covering 11
+* **The regression fixtures** — `scripts/regression_fixtures.py`. 22 fixture runs covering 12
   failure modes of this repository, each applied to a throwaway copy of it, each required to fail
   *and* to fail at the layer that owns it, *and* to fail `./scripts/check_axioms.sh` itself with
   the diagnostic that names that layer. This is what keeps the other three honest: a layer that stopped working
   would turn a fixture green, and a green fixture is a red CI run. It is run in CI immediately
   before the gate, so the gate has to pass on the same tree afterwards. See "Required regression
   tests".
-* **Lean-file coverage and the import invariant** — `scripts/check_imports.py`. Two rules, the
-  second because the first was not enough. Every `.lean` file anywhere in the working tree must
-  fall into one of two **declared** categories: a library module (`AhlProofs.lean` or a file under
-  `AhlProofs/`), or a file named in that script's `DECLARED_AUXILIARY`. And every library module
-  must be reachable by imports from the root module, so that what was built — and therefore what
-  the environment audit can see — is everything that is there.
+* **Artifact coverage and the import invariant** — `scripts/check_imports.py`. Two rules, the
+  second because the first was not enough. Every file in the working tree whose suffix is one this
+  repository covers — `.lean`, `.py`, `.sh`, `.yml`, `.yaml` — must fall into a **declared**
+  category and must be hashed by `reports/PROOF.sha256`:
+
+  | Suffix | Declared category |
+  |---|---|
+  | `.lean` | a library module (`AhlProofs.lean` or a file under `AhlProofs/`), or a file named in `DECLARED_AUXILIARY` |
+  | `.py`, `.sh` | tooling under `scripts/`, at any depth |
+  | `.yml`, `.yaml` | a file named in `DECLARED_YAML` |
+
+  And every library module must be reachable by imports from the root module, so that what was
+  built — and therefore what the environment audit can see — is everything that is there.
+  "Hashed" is not restated here: the rule asks `scripts/gen_proof_sha256.py` for its own file
+  list, so classification and hashing cannot drift into meaning different sets.
+
+  **Why those five suffixes and no others.** Something outside the list can only run if the build
+  or a CI step invokes it. The build is Lake, which reads `lakefile.toml` (a mandatory manifest
+  entry) or `lakefile.lean` (a `.lean`, so already refused unless classified) and compiles
+  `.lean`. CI invokes exactly `python3 scripts/*.py`, `./scripts/*.sh`, `lake`, `lean`, `curl`,
+  `tar`, `find` and a `sha256` comparison, and its step list cannot grow without failing the
+  install-script label check. YAML is on the list for a reason none of the others share: GitHub
+  Actions runs every file under `.github/workflows/` on its own schedule and permissions, without
+  any step of ours referring to it. A `Makefile`, a `Dockerfile`, a `.js` — nothing here reads
+  them; they are inert until one of the files above changes, and every one of those is a mandatory
+  manifest entry. The argument rests on the current build and CI, and would have to be revisited
+  if either grew a new interpreter.
 
   The second rule alone left a file nobody imports uncompiled and unaudited, with `lake build` and
   the audit both exiting 0. Four times now a Lean file has turned out to sit somewhere *no* check
@@ -188,6 +209,16 @@ against an edit that changes the roster too: `DECLARED_RUNS` sits in the same fi
 costs is three places in one commit, because `scripts/check_doc_claims.py` compares the roster
 against the fixture table published in this document. Three agreeing edits is a higher bar than
 one, and it is not a guarantee; naming the bar is the honest thing to do with it.
+
+**Every roster is in the repository it governs, and that includes the coverage rule's.**
+`DECLARED_AUXILIARY`, `DECLARED_YAML`, `EXCLUDED_DIRS` and the covered-suffix set all sit in
+`scripts/check_imports.py`. Adding a directory to the exclusions, or a file to either declared
+list, is a one-line change that re-opens exactly the area the rule closes — and nothing but review
+of the diff will say so. This is not a defect in the rule; it is the same same-commit limit every
+declared roster here has, and it cannot be removed from inside the repository. It is worth stating
+plainly for this one because the coverage rule is the check that says "everything is accounted
+for", and a reader should know what that sentence rests on: a list that a writer can edit in the
+commit that needs it edited.
 
 **The document checker has the same shape of weakness, and less protection.**
 `scripts/check_doc_claims.py` refuses to run with an empty claim list, and every claim it holds
@@ -431,11 +462,12 @@ a library that just finished building — the two conditions cannot both hold.
 
 ### Required regression tests
 
-**19 fixture runs covering 11 failure modes** — eleven ways for this pipeline to be wrong; mode 6
+**22 fixture runs covering 12 failure modes** — twelve ways for this pipeline to be wrong; mode 6
 is exercised twice with a different set of layers active (6 and 6b), mode 7 once per forbidden
 lexeme (7a–7d), because a policy rule that no fixture exercises can be deleted without turning
-anything red, mode 9 once per place a Lean file has actually turned up unclassified (9a–9c), and
-mode 10 once per directory that classification excludes (10a–10c). Each run must make the pipeline exit nonzero **and must be caught by the layer
+anything red, mode 9 once per place a Lean file has actually turned up unclassified (9a–9c), mode
+10 once per directory that classification excludes (10a–10c), and mode 12 once per kind of
+executable artifact that is not Lean (12a–12c). Each run must make the pipeline exit nonzero **and must be caught by the layer
 responsible for it** — a fixture that failed for some unrelated reason would satisfy "exits
 nonzero" and prove nothing.
 
@@ -507,9 +539,12 @@ exited 0, `1` = exited nonzero, `-` = not run):
      10a   imports         0         1         0         0         1         0         -   ok
      10b   imports         0         1         0         0         1         0         -   ok
      10c   imports         0         1         0         0         1         0         -   ok
+     12a   imports         0         1         0         0         1         0         -   ok
+     12b   imports         0         1         0         0         1         0         -   ok
+     12c   imports         0         1         0         0         1         0         -   ok
       11      docs         0         0         0         0         0         0         1   ok
 
-all 19 fixture run(s) covering 11 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
+all 22 fixture run(s) covering 12 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
 ```
 
 | # | Fragment | Layer under test | Why that layer, and why not another |
@@ -532,6 +567,9 @@ all 19 fixture run(s) covering 11 failure mode(s) behaved as declared: each brok
 | 10a | `.git/Bad.lean` | Lean-file coverage | The same class again, arriving through an *exclusion* rather than an omission: classification skipped `.git`, `.lake` and `__pycache__`, so a file there was neither classified nor refused while layer 1 printed "0 unclassified". A `.lean` under any of the three is now refused outright — none of them holds a Lean source in this project, so there is no case to distinguish. |
 | 10b | `.lake/Bad.lean` | Lean-file coverage | Lake's build output. This repository takes no dependencies, so Lake never places sources there; a `.lean` under it is a mistake or a hiding place. |
 | 10c | `__pycache__/Bad.lean` | Lean-file coverage | Python bytecode caches. Same reasoning, and the directory this was first demonstrated in. |
+| 12a | `tools/helper.py` | covered-artifact coverage | The class again, one file type over. The `.lean` rule said nothing about `.py`, so a Python file outside `scripts/` was hashed by nothing and classified by nobody; a workflow step invoking it would have run unhashed content, and the command-set comparison would have noticed the new *call* while saying nothing about the *callee* being outside the manifest. |
+| 12b | `tools/helper.sh` | covered-artifact coverage | Same, for shell. Both categories now require the file to live under `scripts/` **and** to be present in `reports/PROOF.sha256`, with the manifest asked for its own file list rather than the rule restating it. |
+| 12c | `.github/workflows/extra.yml` | covered-artifact coverage | The sharpest of the three: GitHub Actions runs every file under `.github/workflows/` on its own schedule and permissions, with no step of this repository referring to it. So YAML is declared file by file, not admitted by directory, and each declared file must also be hashed. |
 | 11 | An extra `FreeBSD/x86_64)` branch in the published install script, selecting the Linux archive | document claims | Every required branch and the `*)` default remain, and the set of archives offered is unchanged — which is why the previous version of the platform check passed it. It asked whether the recorded platforms were covered, not whether anything else was, so a platform quietly stopped being refused and started receiving another platform's build. The branch set must now equal the declared one exactly. This is the one fixture whose subject lives in a document rather than in the sources, so it is also the only one that runs `scripts/check_doc_claims.py`. |
 
 For every fixture except 6 and 6b the runner regenerates the manifest inside the copy after
@@ -643,8 +681,8 @@ The whole gate, verbatim, on the tree this document describes — exit status 0:
 
 ```
 $ ./scripts/check_axioms.sh
-== layer 1/3: scripts/check_imports.py (Lean-file coverage & import invariant) ==
-every .lean accounted for: 9 library module(s) under AhlProofs/, all reachable from AhlProofs.lean (10 module(s) in the closure); 1 declared auxiliary file(s); 0 unclassified
+== layer 1/3: scripts/check_imports.py (artifact coverage & import invariant) ==
+every covered artifact accounted for: 9 library module(s) under AhlProofs/, all reachable from AhlProofs.lean (10 module(s) in the closure); 1 declared auxiliary .lean; 7 tooling file(s) under scripts/; 1 declared CI configuration file(s); 0 unclassified, all hashed
 
 == layer 2/3: scripts/check_source_policy.py (policy over source text) ==
 source policy holds: 11 .lean file(s) scanned, none contains `sorry`, `admit`, `warningAsError false`, `debug.skipKernelTC`

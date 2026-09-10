@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Lean-file coverage: every `.lean` in this repository belongs to a declared category, and every
+"""Artifact coverage: every file in this repository whose suffix it covers — `.lean`, `.py`,
+`.sh`, `.yml`, `.yaml` — belongs to a declared category and is hashed by the manifest, and every
 library module is reachable by imports from the root module `AhlProofs.lean`.
 
 Two rules, and the first one exists because the second was not enough. See `DECLARED_AUXILIARY`
@@ -40,6 +41,9 @@ import pathlib
 import re
 import sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from gen_proof_sha256 import Degenerate, discover as manifest_discover  # noqa: E402
+
 LIBRARY_DIR = "AhlProofs"
 ROOT_MODULE = "AhlProofs"
 ROOT_FILE = "AhlProofs.lean"
@@ -68,6 +72,42 @@ EXCLUDED_DIRS = {".git", ".lake", "__pycache__"}
 # suffix is outside this guarantee and outside every other check here: nothing in this repository
 # reads file contents to guess a language, and this document does not pretend otherwise.
 LEAN_SUFFIX = ".lean"
+
+# ---------------------------------------------------------------------------------------------
+# The same rule, for the artifacts that are not Lean.
+#
+# The category rule closed `.lean`. It left `.py` and `.sh` open: `tools/helper.py` would have
+# been hashed by nothing and classified by nobody, and a workflow step invoking it would have run
+# unhashed, unreviewed content — the command-set comparison would have noticed the new *call* and
+# not that the *callee* was outside the manifest. `.yml` is worse still: GitHub Actions runs every
+# file under `.github/workflows/`, so a second workflow needs no step of ours to execute at all.
+#
+# So each covered suffix has declared categories, and everything else fails:
+#
+#   .py, .sh   must live under `scripts/` (any depth) and be in the hash manifest. They are the
+#              audit tooling; `scripts/` is what `gen_proof_sha256.py` walks recursively.
+#   .yml/.yaml must be named in DECLARED_YAML and be in the hash manifest. Named one by one, not
+#              admitted by directory, because a file under `.github/workflows/` runs on GitHub's
+#              schedule and permissions whether or not anything here refers to it.
+#   .lean      library module, or DECLARED_AUXILIARY (see above).
+#
+# **Why this list is complete for this repository**, stated so it can be argued with: something
+# outside it can only run if a build or a CI step invokes it. The build is Lake, which reads
+# `lakefile.toml` (a mandatory manifest entry) or `lakefile.lean` (a `.lean`, hence already
+# refused unless classified) and compiles `.lean`. CI invokes exactly `python3 scripts/*.py`,
+# `./scripts/*.sh`, `lake`, `lean`, `curl`, `tar`, `find` and a `sha256` comparison — and its own
+# step list cannot grow without failing `scripts/check_doc_claims.py`, which requires the
+# published install script's labels to cover the workflow's steps one for one. A `Makefile`, a
+# `Dockerfile`, a `.js` — nothing reads them here; they are inert data until some step named
+# above changes, and every file that could make such a change (`ci.yml`, `lakefile.toml`,
+# `lake-manifest.json`, `lean-toolchain`) is a mandatory manifest entry. That is the argument; it
+# rests on the current build and CI, and it would have to be revisited if either grew a new
+# interpreter.
+SCRIPT_SUFFIXES = {".py", ".sh"}
+YAML_SUFFIXES = {".yml", ".yaml"}
+COVERED_SUFFIXES = {LEAN_SUFFIX} | SCRIPT_SUFFIXES | YAML_SUFFIXES
+SCRIPT_DIR = "scripts"
+DECLARED_YAML = (".github/workflows/ci.yml",)
 
 # Every `.lean` file in this repository that is **not** part of the proof library, declared one by
 # one. Nothing else may exist.
@@ -211,7 +251,7 @@ def main() -> int:
                 if imp not in reachable:
                     queue.append(imp)
 
-    # ---- the coverage rule: every .lean in the tree belongs to a declared category ------------
+    # ---- the coverage rule: every covered artifact belongs to a declared category -------------
     declared_aux = set(DECLARED_AUXILIARY)
     for rel in sorted(declared_aux):
         if not (root / rel).is_file():
@@ -235,38 +275,95 @@ def main() -> int:
                 "something outside it."
             )
 
-    # Every `.lean` in the tree, excluded directories included: a file under one of them is not
-    # classified, it is refused. Case variants of the suffix are refused too, so that a coverage
-    # rule keyed on the exact suffix cannot be stepped around by spelling it differently.
-    all_lean: list[pathlib.Path] = []
+    # Every covered-suffix file in the tree, excluded directories included: a file under one of
+    # them is not classified, it is refused. Case variants of a covered suffix are refused too, so
+    # that a rule keyed on the exact suffix cannot be stepped around by spelling it differently.
+    covered: dict[str, list[pathlib.Path]] = {s: [] for s in COVERED_SUFFIXES}
     for q in sorted(root.rglob("*")):
         if not q.is_file() or q.is_symlink():
             continue
         suffix = q.suffix
-        if suffix.lower() != LEAN_SUFFIX:
+        lowered = suffix.lower()
+        if lowered not in COVERED_SUFFIXES:
             continue
-        if suffix != LEAN_SUFFIX:
+        if suffix != lowered:
             problems.append(
-                f"{q.relative_to(root)} spells the Lean suffix as {suffix!r}. Lean sources in "
-                f"this repository are named {LEAN_SUFFIX!r}; a variant spelling is either a "
-                "mistake or a way past a suffix match, and is refused either way."
+                f"{q.relative_to(root)} spells its suffix as {suffix!r}. Covered artifacts in "
+                f"this repository are named in lower case ({lowered!r}); a variant spelling is "
+                "either a mistake or a way past a suffix match, and is refused either way."
             )
             continue
-        all_lean.append(q)
+        if EXCLUDED_DIRS & set(q.relative_to(root).parts):
+            problems.append(
+                f"{q.relative_to(root)} is a {suffix} file under a directory that holds no "
+                f"repository source ({', '.join(sorted(EXCLUDED_DIRS))}). Those are git's own "
+                "storage, lake's build output and Python bytecode caches; a covered artifact "
+                "there is either a mistake or an attempt to keep code out of classification. "
+                "Remove it, or put it where its category belongs."
+            )
+            continue
+        covered[lowered].append(q)
 
-    forbidden_area = [
-        q for q in all_lean if EXCLUDED_DIRS & set(q.relative_to(root).parts)
-    ]
-    for q in forbidden_area:
-        problems.append(
-            f"{q.relative_to(root)} is a Lean file under a directory that holds no Lean source in "
-            f"this project ({', '.join(sorted(EXCLUDED_DIRS))}). Those directories are git's own "
-            "storage, lake's build output and Python bytecode caches; a `.lean` there is either a "
-            "mistake or an attempt to keep code out of classification. Remove it, or move it "
-            f"under {LIBRARY_DIR}/ and import it."
-        )
+    # Everything the hash manifest covers, asked of the manifest itself rather than restated here,
+    # so "classified" and "hashed" cannot drift into meaning different sets.
+    try:
+        manifest_rels = {str(q.relative_to(root)) for q in manifest_discover(root)}
+    except Degenerate as e:
+        problems.append(f"the hash manifest cannot enumerate its own files: {e}")
+        manifest_rels = set()
 
-    every_lean = [q for q in all_lean if q not in set(forbidden_area)]
+    scripts_seen = {s: [] for s in SCRIPT_SUFFIXES}
+    for suffix in sorted(SCRIPT_SUFFIXES):
+        for q in covered[suffix]:
+            rel = str(q.relative_to(root))
+            if pathlib.PurePosixPath(rel).parts[0] != SCRIPT_DIR:
+                problems.append(
+                    f"{rel} is a {suffix} file outside {SCRIPT_DIR}/. Executable tooling in this "
+                    f"repository lives under {SCRIPT_DIR}/ (at any depth), which is what the hash "
+                    "manifest walks; anywhere else it is hashed by nothing and reviewed by "
+                    f"nothing. Move it under {SCRIPT_DIR}/, or delete it."
+                )
+                continue
+            scripts_seen[suffix].append(rel)
+            if rel not in manifest_rels:
+                problems.append(
+                    f"{rel} is under {SCRIPT_DIR}/ but is not covered by reports/PROOF.sha256. "
+                    "Classification and hashing must agree; regenerate the manifest, or find out "
+                    "why the manifest's own walk does not reach this file."
+                )
+    for suffix, seen in sorted(scripts_seen.items()):
+        if not seen:
+            problems.append(
+                f"no {suffix} file found under {SCRIPT_DIR}/ — this category is declared and must "
+                "not be empty; an empty category checks nothing while appearing to"
+            )
+
+    declared_yaml = set(DECLARED_YAML)
+    if not declared_yaml:
+        problems.append("DECLARED_YAML is empty — a declared category that names nothing")
+    for rel in sorted(declared_yaml):
+        if not (root / rel).is_file():
+            problems.append(
+                f"{rel} is declared as a CI configuration file but does not exist"
+            )
+        elif rel not in manifest_rels:
+            problems.append(
+                f"{rel} is a declared CI configuration file but is not covered by "
+                "reports/PROOF.sha256 — GitHub executes it, so its bytes must be hashed"
+            )
+    for suffix in sorted(YAML_SUFFIXES):
+        for q in covered[suffix]:
+            rel = str(q.relative_to(root))
+            if rel not in declared_yaml:
+                problems.append(
+                    f"{rel} is a {suffix} file that is not declared. GitHub Actions runs every "
+                    "file under .github/workflows/ on its own schedule and permissions, with no "
+                    "step of this repository referring to it, so each such file must be named in "
+                    "DECLARED_YAML in this script *and* added to FIXED_FILES in "
+                    "scripts/gen_proof_sha256.py so that its bytes are hashed."
+                )
+
+    every_lean = covered[LEAN_SUFFIX]
     library_rels = {str(q.relative_to(root)) for q in found.values()} | {ROOT_FILE}
     unclassified = [
         str(q.relative_to(root)) for q in every_lean
@@ -292,23 +389,26 @@ def main() -> int:
         )
 
     if problems:
-        print("check_imports.py: FAIL — some Lean file is not covered as it must be",
+        print("check_imports.py: FAIL — some covered artifact is not covered as it must be",
               file=sys.stderr)
         for p in problems:
             print(f"  - {p}", file=sys.stderr)
         print(
-            "\nEvery .lean file in this repository must be either a library module under "
-            f"{LIBRARY_DIR}/ reachable by imports from {ROOT_FILE} — otherwise `lake build` and "
-            "the axiom audit both pass while ignoring it entirely — or a file named in "
-            "DECLARED_AUXILIARY. There is no third place for one to sit.",
+            f"\nEvery {', '.join(sorted(COVERED_SUFFIXES))} file in this repository must belong "
+            "to a declared category and be hashed: a library module under "
+            f"{LIBRARY_DIR}/ reachable by imports from {ROOT_FILE}, a declared auxiliary .lean, "
+            f"tooling under {SCRIPT_DIR}/, or a declared CI configuration file. There is no other "
+            "place for one to sit.",
             file=sys.stderr,
         )
         return 1
 
     print(
-        f"every .lean accounted for: {len(found)} library module(s) under {LIBRARY_DIR}/, all "
-        f"reachable from {ROOT_FILE} ({len(reachable)} module(s) in the closure); "
-        f"{len(declared_aux)} declared auxiliary file(s); 0 unclassified"
+        f"every covered artifact accounted for: {len(found)} library module(s) under "
+        f"{LIBRARY_DIR}/, all reachable from {ROOT_FILE} ({len(reachable)} module(s) in the "
+        f"closure); {len(declared_aux)} declared auxiliary .lean; "
+        f"{sum(len(v) for v in scripts_seen.values())} tooling file(s) under {SCRIPT_DIR}/; "
+        f"{len(declared_yaml)} declared CI configuration file(s); 0 unclassified, all hashed"
     )
     return 0
 

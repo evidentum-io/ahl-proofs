@@ -63,10 +63,13 @@ rather than implying an upstream attestation.
 
 The gate is `./scripts/check_axioms.sh`, three layers in order:
 
-1. **Lean-file coverage and the import invariant** (`scripts/check_imports.py`) — every `.lean`
-   file anywhere in the tree must belong to a declared category: a library module (`AhlProofs.lean`
-   or a file under `AhlProofs/`, which must in turn be reachable by imports from the root module)
-   or a file named in that script's `DECLARED_AUXILIARY`. A library module nobody imports is never
+1. **Artifact coverage and the import invariant** (`scripts/check_imports.py`) — every file in the
+   tree whose suffix this repository covers (`.lean`, `.py`, `.sh`, `.yml`, `.yaml`) must belong
+   to a declared category *and* be hashed by the manifest: a library module (`AhlProofs.lean` or a
+   file under `AhlProofs/`, which must in turn be reachable by imports from the root module), a
+   file named in that script's `DECLARED_AUXILIARY`, tooling under `scripts/`, or a CI
+   configuration file named in `DECLARED_YAML` — the last declared one by one because GitHub
+   Actions runs every file under `.github/workflows/` whether or not anything here refers to it. A library module nobody imports is never
    compiled, so it is never audited either, and both `lake build` and the audit exit 0 while
    ignoring it entirely; a `.lean` outside both categories — in the repository root, say — was
    invisible to every check there was. The rule enumerates categories rather than directories, so
@@ -101,7 +104,7 @@ The gate is `./scripts/check_axioms.sh`, three layers in order:
    checked here against every constant on every run, at a finer grain than the 102 named
    theorems, and it still holds exactly.
 
-**19 fixture runs covering 11 failure modes** — an unimported module, an `example` under a locally
+**22 fixture runs covering 12 failure modes** — an unimported module, an `example` under a locally
 relaxed `warningAsError`, a locally skipped kernel typecheck, an unfinished theorem, a top-level
 `axiom`, a new file left out of the hash manifest (run twice, with and without its `import` line,
 to show the manifest layer works independently of the import invariant), a forbidden lexeme in the
@@ -115,7 +118,7 @@ stopped propagating an exit status is caught too. It also validates its own rost
 starting, so a truncated or emptied fixture list fails instead of reporting success over nothing.
 The working tree is never written to, and the runner hashes every file under it except `.git/`,
 `.lake/` and `__pycache__/` before and after to prove it. `reports/PROOF.md`, "Required regression
-tests", lists all 19 runs with the exit status of every stage.
+tests", lists all 22 runs with the exit status of every stage.
 
 A defined list of claims in this file, in `reports/PROOF.md` and in `reports/TOOLCHAIN.md` is
 itself checked in CI by `scripts/check_doc_claims.py`: four published transcripts, the counts, the

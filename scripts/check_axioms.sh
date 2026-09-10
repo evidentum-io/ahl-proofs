@@ -50,7 +50,7 @@ cd "$repo_root"
 
 fail=0
 
-echo "== layer 1/3: scripts/check_imports.py (Lean-file coverage & import invariant) =="
+echo "== layer 1/3: scripts/check_imports.py (artifact coverage & import invariant) =="
 python3 scripts/check_imports.py
 status=$?
 if [ "$status" -ne 0 ]; then

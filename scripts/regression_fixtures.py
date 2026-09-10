@@ -381,10 +381,28 @@ FIXTURES = [
         "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1, "manifest": 0,
                    "docs": None},
         "layer": "imports",
-        "reason": [f"{directory}/Bad.lean", "holds no Lean source in this project"],
+        "reason": [f"{directory}/Bad.lean", "holds no repository source"],
         "gate_reason": GATE_IMPORTS,
     }
     for suffix, directory in [("a", ".git"), ("b", ".lake"), ("c", "__pycache__")]
+] + [
+    {
+        "id": f"12{suffix}",
+        "mode": "12",
+        "title": f"{rel}, an executable artifact outside every declared category",
+        "apply": stray_lean(rel, body),
+        "regen_manifest": False,
+        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1, "manifest": 0,
+                   "docs": None},
+        "layer": "imports",
+        "reason": [rel, why],
+        "gate_reason": GATE_IMPORTS,
+    }
+    for suffix, rel, body, why in [
+        ("a", "tools/helper.py", "print('unhashed')\n", "outside scripts/"),
+        ("b", "tools/helper.sh", "#!/bin/sh\n: unhashed\n", "outside scripts/"),
+        ("c", ".github/workflows/extra.yml", "name: extra\non: push\n", "is not declared"),
+    ]
 ] + [
     {
         "id": "11",
@@ -430,8 +448,8 @@ STAGES = ["build", "imports", "policy", "audit", "gate", "manifest", "docs"]
 # published in reports/PROOF.md, so the same edit has to be made in three places, in one commit,
 # to go unnoticed. See "Trust boundary" in reports/PROOF.md.
 DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b", "7a", "7b", "7c", "7d", "8",
-                 "9a", "9b", "9c", "10a", "10b", "10c", "11")
-DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11")
+                 "9a", "9b", "9c", "10a", "10b", "10c", "12a", "12b", "12c", "11")
+DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12")
 REQUIRED_KEYS = {
     "id", "mode", "title", "apply", "regen_manifest", "expect", "layer", "reason", "gate_reason",
 }
