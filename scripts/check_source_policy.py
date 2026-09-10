@@ -259,9 +259,18 @@ def validate_rules() -> list[str]:
 
 
 def discover(root: pathlib.Path) -> list[pathlib.Path]:
+    """Every `.lean` path this policy is responsible for, symbolic links **included**.
+
+    Links used to be dropped here, next to directories and unreadable entries, as a kind of entry
+    that could not carry source. That was wrong and it cost a green gate: `AhlProofs/Evil.lean ->
+    ../Payload.txt` is compiled by Lake, skipped by this walk as a link, and never scanned under
+    its target's name either, because `Payload.txt` does not end in `.lean`. They are returned now
+    and refused by the caller — a refusal, not a scan of what they point at, because reading
+    through a link would make this policy's own file list depend on something outside the tree.
+    """
     return sorted(
         p for p in root.rglob("*" + LEAN_SUFFIX)
-        if p.is_file() and not p.is_symlink()
+        if (p.is_file() or p.is_symlink())
         and not (EXCLUDED_DIRS & set(p.relative_to(root).parts))
     )
 
@@ -294,6 +303,16 @@ def main() -> int:
 
     findings: list[str] = []
     for path in files:
+        if path.is_symlink():
+            findings.append(
+                f"{path.relative_to(root)}: is a symbolic link. A `{LEAN_SUFFIX}` link is refused "
+                "rather than followed: Lake compiles through one, and following it here would "
+                "scan bytes that belong to whatever the link points at — possibly outside this "
+                "repository — under the name of a file inside it. `scripts/check_imports.py` "
+                "refuses every link one layer earlier; this is the same refusal, stated where "
+                "the scan would otherwise have skipped it."
+            )
+            continue
         try:
             data = path.read_bytes()
         except OSError as e:
@@ -307,13 +326,14 @@ def main() -> int:
         findings += [text for _, text in scan_file(data, str(path.relative_to(root)))]
 
     if findings:
-        print("check_source_policy.py: FAIL — forbidden lexeme(s) in Lean sources",
+        print("check_source_policy.py: FAIL — Lean source(s) this policy refuses",
               file=sys.stderr)
         for f in findings:
             print(f"  - {f}", file=sys.stderr)
         print(
             "\nThe ban is total, with no allowlist: these names have no legitimate use in this "
-            "repository, in code or in prose, under any spelling. See this script's module "
+            "repository, in code or in prose, under any spelling — and a `.lean` that is a "
+            "symbolic link is refused outright rather than scanned. See this script's module "
             "docstring and \"Trust boundary\" in reports/PROOF.md.",
             file=sys.stderr,
         )
@@ -321,7 +341,8 @@ def main() -> int:
 
     labels = ", ".join(f"`{label}`" for label, _, _ in FORBIDDEN)
     print(
-        f"source policy holds: {len(files)} .lean file(s) scanned twice each — as read and with "
+        f"source policy holds: {len(files)} .lean file(s), none a symbolic link, scanned twice "
+        f"each — as read and with "
         f"identifier-quoting characters removed — none contains {labels}; the {len(MUST_REJECT)} "
         "declared must-reject sample(s) were all rejected before the scan began"
     )

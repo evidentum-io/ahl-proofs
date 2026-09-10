@@ -61,6 +61,7 @@ Usage:
 """
 import argparse
 import hashlib
+import os
 import pathlib
 import shutil
 import subprocess
@@ -69,7 +70,7 @@ import tempfile
 
 # One definition of the controlled area, shared with the two checks that walk the same tree.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from check_imports import EXCLUDED_DIRS as EXCLUDED  # noqa: E402
+from check_imports import EXCLUDED_DIRS as EXCLUDED, LEAN_SUFFIX  # noqa: E402
 
 MODEL = "AhlProofs/Model.lean"
 ROOT_MODULE_FILE = "AhlProofs.lean"
@@ -188,6 +189,98 @@ def fixture_3c(root: pathlib.Path) -> None:
     )
     prepend(root, MODEL, "import Lean\n")
     append(root, MODEL, OPEN_TACTIC + UNCHECKED_FALSE)
+
+
+# The payload the link fixtures point at: a declaration that stores no constant, so the
+# environment audit has nothing to look at, carrying the placeholder the source policy exists to
+# refuse. It is the same content as fixture 2's, placed in a file whose *name* keeps it out of
+# every walk that is keyed on the `.lean` suffix.
+LINK_PAYLOAD = f"set_option {WARN_OFF} in\nexample : False := {PLACEHOLDER}\n"
+
+
+def import_line(root: pathlib.Path, module: str) -> None:
+    """Add `import <module>` to the root module, among the imports rather than after them.
+
+    Appending it below the header makes Lean refuse the file outright ("invalid 'import' command,
+    it must be used in the beginning of the file"), which fails the build for a reason that has
+    nothing to do with the fixture.
+    """
+    p = root / "AhlProofs.lean"
+    lines = p.read_text(encoding="utf-8").splitlines(True)
+    last = max(i for i, line in enumerate(lines) if line.startswith("import "))
+    lines.insert(last + 1, f"import {module}\n")
+    p.write_text("".join(lines), encoding="utf-8")
+
+
+def fixture_21a(root: pathlib.Path) -> None:
+    """A `.lean` symbolic link to a file that is not a `.lean`, imported by the root module.
+
+    The path ends in the covered suffix, so Lake compiles it; the bytes live under a name no walk
+    keyed on that suffix reaches. Before this round the link was *skipped* by the coverage scan
+    and by the source policy alike — each as a kind of entry that could not carry source — and the
+    placeholder inside rode past a green gate into the built library.
+    """
+    (root / "Payload.txt").write_text(LINK_PAYLOAD, encoding="utf-8")
+    (root / "AhlProofs" / "Evil.lean").symlink_to(pathlib.Path("..") / "Payload.txt")
+    import_line(root, "AhlProofs.Evil")
+
+
+def fixture_21b(root: pathlib.Path) -> None:
+    """A symbolic link in place of `lakefile.toml`, which carries no covered suffix.
+
+    The companion to 21a, and the reason the refusal is not keyed on the suffix: the build and pin
+    files decide what gets compiled and with which toolchain, and none of them ends in `.lean`,
+    `.py`, `.sh` or `.yml`. A rule that only refused links with covered suffixes would have let
+    this one hash and build content from outside the tree.
+    """
+    lake = root / "lakefile.toml"
+    (root / "elsewhere.toml").write_text(lake.read_text(encoding="utf-8"), encoding="utf-8")
+    lake.unlink()
+    lake.symlink_to(pathlib.Path("elsewhere.toml"))
+
+
+def fixture_22(root: pathlib.Path) -> None:
+    """A module whose path leaves the library directory — and this repository — entirely.
+
+    A module name's components become path components, and Lean's identifier quoting lets a
+    component be `..`. `AhlProofs.<..>.<..>.outside.Evil` therefore resolves to a file two levels
+    above the repository root, which Lake compiles and which no walk over this tree can ever see:
+    the source policy passes, correctly, because the file is not in the repository it scans.
+
+    What refuses it is the import parser, which accepts a plain dotted identifier and nothing
+    else, and reports an import line it cannot parse as a failure rather than ignoring it. That
+    rule is what this fixture holds shut.
+    """
+    outside = root.parent / "outside"
+    outside.mkdir(exist_ok=True)
+    (outside / "Evil.lean").write_text(LINK_PAYLOAD, encoding="utf-8")
+    import_line(root, f"AhlProofs.{QL}..{QR}.{QL}..{QR}.outside.Evil")
+
+
+def fixture_23(root: pathlib.Path) -> None:
+    """A hard link with the `.lean` suffix to a payload that also exists under another name.
+
+    Included because it is the case that looks like 21a and is not: a hard link has no target to
+    follow — both names are the file — so the bytes Lake compiles are the bytes this repository's
+    walks read under the `.lean` name. Nothing needs to refuse it, and nothing does; the source
+    policy simply finds the placeholder, which is what this fixture requires.
+    """
+    (root / "Payload.txt").write_text(LINK_PAYLOAD, encoding="utf-8")
+    os.link(root / "Payload.txt", root / "AhlProofs" / "Evil.lean")
+    import_line(root, "AhlProofs.Evil")
+
+
+def fixture_24(root: pathlib.Path) -> None:
+    """A library file whose covered suffix is spelled in upper case.
+
+    It is deliberately *not* imported. On a case-insensitive filesystem Lake resolves
+    `AhlProofs.Evil` to it and the build succeeds; on a case-sensitive one the build fails. A
+    fixture whose declared outcome depended on the filesystem would be a fixture that fails in CI
+    or locally rather than saying anything, so this one plants the file and leaves the coverage
+    rule to refuse it — which it does identically on both.
+    """
+    (root / "AhlProofs" / ("Evil" + LEAN_SUFFIX.upper())).write_text(
+        LINK_PAYLOAD, encoding="utf-8")
 
 
 def fixture_4(root: pathlib.Path) -> None:
@@ -717,6 +810,61 @@ FIXTURES = [
         "reason": ["FreeBSD/x86_64", "no longer refused"],
         "gate_reason": "",
     },
+    {
+        "id": "21a",
+        "mode": "21",
+        "title": "a .lean symbolic link to a file that is not a .lean, imported",
+        "apply": fixture_21a,
+        "regen_manifest": True,
+        "expect": {"build": 0, "imports": 1, "policy": 1, "audit": 0, "gate": 1, "manifest": 0, "docs": None},
+        "layer": "imports",
+        "reason": ["AhlProofs/Evil.lean is a symbolic link", "covered suffix"],
+        "gate_reason": GATE_IMPORTS,
+    },
+    {
+        "id": "21b",
+        "mode": "21",
+        "title": "a symbolic link in place of lakefile.toml, which carries no covered suffix",
+        "apply": fixture_21b,
+        "regen_manifest": True,
+        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1, "manifest": 0, "docs": None},
+        "layer": "imports",
+        "reason": "lakefile.toml is a symbolic link",
+        "gate_reason": GATE_IMPORTS,
+    },
+    {
+        "id": "22",
+        "mode": "22",
+        "title": "a module whose path leaves the library directory, and the repository, entirely",
+        "apply": fixture_22,
+        "regen_manifest": True,
+        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1, "manifest": 0, "docs": None},
+        "layer": "imports",
+        "reason": "import line not understood by this checker",
+        "gate_reason": GATE_IMPORTS,
+    },
+    {
+        "id": "23",
+        "mode": "23",
+        "title": "a hard link with the .lean suffix to a payload that also exists under another name",
+        "apply": fixture_23,
+        "regen_manifest": True,
+        "expect": {"build": 0, "imports": 0, "policy": 1, "audit": 0, "gate": 1, "manifest": 0, "docs": None},
+        "layer": "policy",
+        "reason": f"forbidden lexeme `{PLACEHOLDER}`",
+        "gate_reason": GATE_POLICY,
+    },
+    {
+        "id": "24",
+        "mode": "24",
+        "title": "a library file whose covered suffix is spelled in upper case",
+        "apply": fixture_24,
+        "regen_manifest": True,
+        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1, "manifest": 0, "docs": None},
+        "layer": "imports",
+        "reason": "spells its suffix as",
+        "gate_reason": GATE_IMPORTS,
+    },
 ]
 
 # `gate` is `./scripts/check_axioms.sh` itself, run on the corrupted copy. It is not a fourth
@@ -749,9 +897,10 @@ STAGES = ["build", "imports", "policy", "audit", "gate", "manifest", "docs"]
 DECLARED_RUNS = ("1", "2", "3", "3b", "3c", "4", "5", "6", "6b", "7a", "7b", "7c", "7d", "8",
                  "9a", "9b", "9c", "10a", "10b", "10c", "12a", "12b", "12c",
                  "15a", "15b", "15c", "16a", "16b", "16c", "16d",
-                 "17", "18", "19a", "19b", "19c", "20a", "20b", "20c", "14", "11")
+                 "17", "18", "19a", "19b", "19c", "20a", "20b", "20c", "14", "11",
+                 "21a", "21b", "22", "23", "24")
 DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "14",
-                  "15", "16", "17", "18", "19", "20")
+                  "15", "16", "17", "18", "19", "20", "21", "22", "23", "24")
 REQUIRED_KEYS = {
     "id", "mode", "title", "apply", "regen_manifest", "expect", "layer", "reason", "gate_reason",
 }

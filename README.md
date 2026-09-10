@@ -75,13 +75,17 @@ The gate is `./scripts/check_axioms.sh`, three layers in order:
    and fall inside the file list the manifest generator enumerates, and every library module must
    be reachable by imports from `AhlProofs.lean`. A module nobody imports is never compiled, so it
    is never audited either, and both `lake build` and the audit exit 0 while ignoring it entirely.
+   Symbolic links are **refused** rather than skipped, wherever they are and whatever their
+   suffix: Lake compiles through a link, so a link is a way to put covered bytes where no walk
+   reads them.
    Whether the *recorded* `reports/PROOF.sha256` matches that file list is a separate step of the
    pipeline, not this layer.
 2. **The policy over source text** (`scripts/check_source_policy.py`) — a short declared list of
    lexemes is rejected in every `.lean` file the layer above admits — the same three directories
    are skipped here and refused there — with no allowlist of files or places. Which lexemes
    is not written out here; the gate prints them, and that output is published and checked in
-   `reports/PROOF.md`. It decides nothing about meaning; it refuses *names* — and every file is
+   `reports/PROOF.md`. A `.lean` that is a symbolic link is refused here too, rather than
+   followed or skipped. It decides nothing about meaning; it refuses *names* — and every file is
    matched twice, as it is on disk and again with Lean's identifier-quoting characters removed,
    so a rule catches a name rather than one spelling of it. What it buys is the case the next
    layer structurally cannot see: a placeholder proof inside an `example`, which never becomes a
@@ -106,11 +110,11 @@ That is a summary and not the account. What each layer does *not* establish, why
 the environment instead of the sources, and the boundary of the whole construction are stated once
 under **"Trust boundary"** in `reports/PROOF.md`.
 
-**40 fixture runs covering 19 failure modes** are **run in CI on every push and pull request** by
+**45 fixture runs covering 23 failure modes** are **run in CI on every push and pull request** by
 `scripts/regression_fixtures.py`, immediately before the gate. They are not listed here: the
 modes are declared in that script and tabulated in `reports/PROOF.md`, "Required regression
 tests", and that table is checked against the declared roster on every run. A prose list here
-would be a second copy — an earlier one named eight of the nineteen and stopped, which is the
+would be a second copy — an earlier one named eight of them and stopped, which is the
 same drift a parallel count produces.
 
 Each is applied to a throwaway copy of the repository, and the runner asserts not only that the

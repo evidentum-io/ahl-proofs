@@ -292,28 +292,64 @@ def main() -> int:
                 f"{rel} is declared as an auxiliary Lean file but does not exist — a declaration "
                 "that names nothing is how this list stops meaning anything"
             )
-    # A symlinked directory would make "this repository's files" mean whatever it points at, and
-    # would put reachability outside the tree's control. There are none, and there is no use for
-    # one here. `.git` is left out of this scan only because git itself may legitimately use links
-    # in its own storage; nothing under `.git` is a Lean source, and the scan below refuses one
-    # anyway.
+    # ---- symbolic links: refused, not skipped ------------------------------------------------
+    #
+    # This used to refuse only links to *directories*, and skip every other link as harmless. It
+    # was not harmless. `AhlProofs/Evil.lean -> ../Payload.txt` is a link with a covered suffix
+    # pointing at a file without one: Lake compiles it, because Lake reads a path and does not
+    # care what kind of entry is at the end of it; this scan skipped it as a link; the source
+    # policy skipped it as a link; and `Payload.txt` is not a `.lean`, so nothing scanned the
+    # bytes that were compiled. A `sorry` inside an `example` rode in that way past a green gate.
+    #
+    # The rule is now total, because that is the third defect of one shape in this repository —
+    # every one of them an exclusion introduced as "nothing can be here". A link is refused
+    # wherever it is found. Two consequences are worth naming rather than leaving implicit:
+    #
+    # * The refusal covers the entries a link's kind would otherwise decide for us: a link to a
+    #   directory, a link to a file, a broken link, and a link whose target sits outside this
+    #   repository entirely. None of them has to be reasoned about separately.
+    # * It covers the build and pin files too — `lakefile.toml`, `lean-toolchain`,
+    #   `lake-manifest.json` carry no covered suffix, so a suffix-keyed rule would have let a link
+    #   in their place hash content that is not in this repository.
+    #
+    # `.git` is the single exception and it is bounded: a link under git's own storage that does
+    # *not* carry a covered suffix is left alone, because git may legitimately use one and nothing
+    # in this pipeline reads anything under `.git` — not Lake, not the policy, not the manifest
+    # generator. A link under `.git` that *does* carry a covered suffix is refused like any other,
+    # so the exception cannot be used to park a Lean source there.
+    symlink_refusals: set[pathlib.Path] = set()
     for q in sorted(root.rglob("*")):
-        parts = set(q.relative_to(root).parts)
-        if ".git" in parts:
+        if not q.is_symlink():
             continue
-        if q.is_symlink() and q.is_dir():
-            problems.append(
-                f"{q.relative_to(root)} is a symbolic link to a directory. This repository "
-                "contains none, and one would make the set of files it covers depend on "
-                "something outside it."
-            )
+        rel = q.relative_to(root)
+        covered_suffix = q.suffix.lower() in COVERED_SUFFIXES
+        if ".git" in set(rel.parts) and not covered_suffix:
+            continue
+        symlink_refusals.add(q)
+        problems.append(
+            f"{rel} is a symbolic link"
+            + (f" named with a covered suffix ({q.suffix})" if covered_suffix else "")
+            + ". This repository contains none. A link makes the bytes at a path, and therefore "
+            "what this repository covers, depend on something the tree does not control; Lake "
+            "will compile through one while a walk that skips links never reads what it compiled."
+        )
 
     # Every covered-suffix file in the tree, excluded directories included: a file under one of
     # them is not classified, it is refused. Case variants of a covered suffix are refused too, so
     # that a rule keyed on the exact suffix cannot be stepped around by spelling it differently.
     covered: dict[str, list[pathlib.Path]] = {s: [] for s in COVERED_SUFFIXES}
     for q in sorted(root.rglob("*")):
-        if not q.is_file() or q.is_symlink():
+        if q.is_symlink():
+            # Skipped here because the scan above refuses it — and that is checked, not assumed.
+            # If the refusal ever stops firing, this reports the gap instead of inheriting it.
+            if q not in symlink_refusals:
+                problems.append(
+                    f"{q.relative_to(root)} is a symbolic link that the scan above did not "
+                    "refuse, and classification skips links. One of the two must change: a link "
+                    "is either refused or classified, never neither."
+                )
+            continue
+        if not q.is_file():
             continue
         suffix = q.suffix
         lowered = suffix.lower()

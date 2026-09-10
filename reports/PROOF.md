@@ -49,7 +49,7 @@ document" below. The four:
   characters outright was tried and rejected on evidence: this repository uses them as Russian
   quotation marks in doc comments, and `AhlProofs/Tree/Model.lean` needs identifier quoting for
   the parameter `«from»`, because `from` is a Lean keyword.
-* **The regression fixtures** — `scripts/regression_fixtures.py`. 40 fixture runs covering 19
+* **The regression fixtures** — `scripts/regression_fixtures.py`. 45 fixture runs covering 23
   failure modes of this repository, each applied to a throwaway copy of it, each required to fail
   *and* to fail at the layer that owns it, *and* to fail `./scripts/check_axioms.sh` itself with
   the diagnostic that names that layer. This is what keeps the other three honest: a layer that stopped working
@@ -119,11 +119,45 @@ document" below. The four:
 
   **The exact scope of this guarantee**, stated so it does not read wider than the code: a *Lean
   file* here is a **regular file whose name ends in exactly `.lean`**. A file whose suffix merely
-  case-folds to that (`Bad.LEAN`) is refused rather than left uncovered, and directory symbolic
-  links anywhere outside `.git/` are refused too, since one would make "this repository's files"
-  depend on something outside the repository. What is *not* covered is a file with Lean content
-  and no `.lean` suffix: nothing here reads file contents to guess a language, and no claim is
-  made that it does.
+  case-folds to that (`Bad.LEAN`) is refused rather than left uncovered, and **every symbolic
+  link is refused**, not only one pointing at a directory. That last word used to be "directory",
+  and the difference was a hole: `AhlProofs/Evil.lean -> ../Payload.txt` is a link with the
+  covered suffix pointing at a file without one, so Lake compiled it while both this layer and the
+  source policy skipped it as a link and nothing ever read the bytes that were compiled. A
+  placeholder proof inside an `example` reached the built library with the gate at exit 0.
+  Regression fixtures 21a and 21b hold it shut.
+
+  What is *not* covered is a file with Lean content and no `.lean` suffix: nothing here reads file
+  contents to guess a language, and no claim is made that it does. That remains true and is now
+  bounded rather than open-ended — a file without the suffix cannot become a module, because the
+  only two ways to give it the suffix are a link, which is refused, and a hard link, which is not
+  a second file at all but a second name for the same bytes, read and hashed under the `.lean`
+  name like any other (fixture 23).
+
+### Every exclusion, and what each one is worth
+
+Three times now the defect has been an *exclusion* rather than a missing check, and each time the
+exclusion was introduced as a conservative measure — "nothing can be there, so do not look".
+
+| Round | Exclusion | What it turned out to admit |
+|---|---|---|
+| 11 | `.lean` under `.git/`, `.lake/`, `__pycache__/` skipped by classification | a Lean file neither classified nor refused, while the layer printed "0 unclassified" |
+| 18 | the byte pattern `debug.skipKernelTC` | the same option under identifier quoting, and with it a theorem of `False` |
+| 19 | symbolic links skipped as a kind of entry that cannot carry source | a `.lean` link to a file without that suffix — compiled, never scanned |
+
+So the rule this repository now works to: **an exclusion must be either a refusal or a proved
+statement, never an assumption.** Below is every exclusion the pipeline still contains, each with
+its status. If something is not in this table, it is not excluded.
+
+| Exclusion | Status | Why that status |
+|---|---|---|
+| `.git/`, `.lake/`, `__pycache__/` in the source-policy walk | **proved** | Not an assumption about those directories but a consequence of a refusal one layer earlier: `scripts/check_imports.py` **refuses** any covered-suffix file under them, so a `.lean` this walk never reaches has already failed the gate. Fixtures 12a–12c. |
+| Symbolic links, anywhere | **turned into a refusal** (round 19) | Was "links to directories are refused, other links are skipped". Now every link is refused wherever it is found, whatever it points at and whatever its suffix — including in place of `lakefile.toml`, `lean-toolchain` and `lake-manifest.json`, which carry no covered suffix and would have slipped past a suffix-keyed rule (fixture 21b). The classification loop still skips links, and that skip is *checked*: a link it skips which the refusal did not report is itself a failure. |
+| Symbolic links under `.git/` that carry no covered suffix | **recorded boundary**, bounded | The one exception. Git may legitimately use links in its own storage, and nothing in this pipeline reads anything under `.git/` — not Lake, not the policy, not the manifest generator. A link under `.git/` that *does* carry a covered suffix is refused like any other, so the exception cannot be used to park a Lean source there. |
+| Files with no covered suffix (`.md`, `.txt`, `LICENSE`, …) | **proved**, conditionally | Such a file cannot become a module: Lake resolves a module to a path ending in `.lean`, and the two ways to put that name on other bytes are a link (refused) and a hard link (the same bytes, scanned under that name). The condition is the one stated above — nothing guesses a language from contents — and the residual case is a CI step invoking an interpreter on a file of some other suffix, which is the hand-maintained part named in the canonical scope sentence. |
+| Module paths that leave the library directory | **proved** | A module component may be identifier-quoted, and `AhlProofs.«..».«..».outside.Evil` resolves to a file two levels above the repository, which Lake compiles and no walk over this tree can see. The import parser accepts a plain dotted identifier and refuses any line it cannot parse, rather than ignoring it — so this fails at the coverage layer even though the file is beyond every scan. Fixture 22. |
+| The eight `unsafe` companions not re-added in the kernel re-check | **proved** | Not asserted here but enforced by Lean: a safe declaration that mentions a `partial` one is refused by the kernel (`safe declaration must not contain partial declaration '...'`). Every one of the 599 successful individual re-adds is therefore evidence that it mentions none of them. |
+| `example`, which stores no constant and so is invisible to the environment audit | **recorded boundary**, bought elsewhere | The audit cannot see it — there is no constant to walk or to re-add. What buys it is the source policy refusing the lexemes an `example` would have to carry, which is exactly why the policy's own coverage of `.lean` files has to be total, and exactly what the link defect broke. Fixture 2 plants the placeholder inside one; fixture 21a is the same payload arriving through a link. |
 
 ### What is checked about this document
 
@@ -577,7 +611,7 @@ a library that just finished building — the two conditions cannot both hold.
 
 ### Required regression tests
 
-**40 fixture runs covering 19 failure modes** — nineteen ways for this pipeline to be wrong. Some
+**45 fixture runs covering 23 failure modes** — twenty-three ways for this pipeline to be wrong. Some
 modes take more than one run, because the same mistake has more than one spelling and a rule that
 no fixture exercises can be deleted without turning anything red: where that applies, there is one
 run per lexeme, per excluded directory, per artifact kind, per field, per document. **Which modes
@@ -684,8 +718,13 @@ reaches:
      20c      docs         -         0         0         -         -         0         1
       14   imports         0         1         0         0         1         0         -
       11      docs         -         0         0         -         -         0         1
+     21a   imports         0         1         1         0         1         0         -
+     21b   imports         0         1         0         0         1         0         -
+      22   imports         0         1         0         0         1         0         -
+      23    policy         0         0         1         0         1         0         -
+      24   imports         0         1         0         0         1         0         -
 
-declared outcomes for 40 fixture run(s) covering 19 failure mode(s). Nothing was executed to produce this table: it is rendered from the declarations, and a run is what checks them.
+declared outcomes for 45 fixture run(s) covering 23 failure mode(s). Nothing was executed to produce this table: it is rendered from the declarations, and a run is what checks them.
 ```
 
 | # | Fragment | Layer under test | Why that layer, and why not another |
@@ -730,6 +769,11 @@ declared outcomes for 40 fixture run(s) covering 19 failure mode(s). Nothing was
 | 20c | the same, from `reports/TOOLCHAIN.md` | document claims | |
 | 14 | `lake-manifest.json` removed from `FIXED_FILES` in `scripts/gen_proof_sha256.py` | covered-artifact coverage | That file carries none of the covered suffixes, so the suffix rule says nothing about it, and the only thing that used to protect it was a list inside the very script an edit would touch — dropping the entry produced a shorter manifest and a green run. `scripts/check_imports.py` now declares the build and pin files separately and requires the two lists to be equal. |
 | 11 | An extra `FreeBSD/x86_64)` branch in the published install script, selecting the Linux archive | document claims | Every required branch and the `*)` default remain, and the set of archives offered is unchanged — which is why the previous version of the platform check passed it. It asked whether the recorded platforms were covered, not whether anything else was, so a platform quietly stopped being refused and started receiving another platform's build. The branch set must now equal the declared one exactly. This is the one fixture whose subject lives in a document rather than in the sources, so it is also the only one that runs `scripts/check_doc_claims.py`. |
+| 21a | `AhlProofs/Evil.lean -> ../Payload.txt`, a link with the covered suffix pointing at a file without one, imported by the root module | covered-artifact coverage | Lake reads a path and does not care what kind of entry is at the end of it, so the payload compiles; both the coverage scan and the source policy used to skip links as a kind of entry that could not carry source, and `Payload.txt` is not a `.lean`, so nothing read the bytes that were compiled. A placeholder inside an `example` reached the built library with the gate at exit 0. Both layers refuse it now; the fixture requires both. |
+| 21b | a link in place of `lakefile.toml` | covered-artifact coverage | The companion that keeps the refusal from being keyed on the suffix. The build and pin files decide what is compiled and with which toolchain, and none of them ends in a covered suffix, so a suffix-keyed rule would have hashed and built content from outside the tree. |
+| 22 | `import AhlProofs.«..».«..».outside.Evil`, resolving to a file two levels above the repository | covered-artifact coverage | A module component may be identifier-quoted, and a quoted component may be `..`. Lake compiles the file; the source policy passes, correctly, because the file is not in the repository it scans; the audit passes, because an `example` stores no constant. The only thing that refuses it is the import parser, which accepts a plain dotted identifier and reports a line it cannot parse as a failure instead of ignoring it. |
+| 23 | a **hard** link with the `.lean` suffix to the same payload | source policy | The case that looks like 21a and is not, included so the difference is on record rather than in someone's head. A hard link has no target to follow — both names are the file — so the bytes Lake compiles are the bytes the policy reads under the `.lean` name, and the placeholder is found there. Nothing needs to refuse it, and nothing does. |
+| 24 | `AhlProofs/Evil.LEAN`, a covered suffix spelled in upper case | covered-artifact coverage | Deliberately not imported: on a case-insensitive filesystem Lake resolves `AhlProofs.Evil` to it and the build succeeds, on a case-sensitive one it does not, and a fixture whose declared outcome depended on the filesystem would say nothing in one of the two places it runs. The coverage rule refuses the spelling identically on both, and it is the only layer that sees the file — the policy's glob matches `.lean` and not `.LEAN`. |
 
 For every fixture except 6 and 6b the runner regenerates the manifest inside the copy after
 applying the fixture, so manifest staleness cannot be what fails and the named layer is
@@ -837,7 +881,7 @@ $ ./scripts/check_axioms.sh
 every covered artifact accounted for: 9 library module(s) under AhlProofs/, all reachable from AhlProofs.lean (10 module(s) in the closure); 1 declared auxiliary .lean; 7 tooling file(s) under scripts/; 1 declared CI configuration file(s); 0 unclassified, all inside the manifest's file list (that the recorded manifest matches it is checked separately, by gen_proof_sha256.py --check)
 
 == layer 2/3: scripts/check_source_policy.py (policy over source text) ==
-source policy holds: 11 .lean file(s) scanned twice each — as read and with identifier-quoting characters removed — none contains `sorry`, `admit`, `warningAsError false`, `debug.skipKernelTC`; the 7 declared must-reject sample(s) were all rejected before the scan began
+source policy holds: 11 .lean file(s), none a symbolic link, scanned twice each — as read and with identifier-quoting characters removed — none contains `sorry`, `admit`, `warningAsError false`, `debug.skipKernelTC`; the 7 declared must-reject sample(s) were all rejected before the scan began
 
 == layer 3/3: scripts/Audit.lean (environment-based axiom & placeholder-proof audit) ==
 scanned 645 constant(s) whose home module is `AhlProofs` or under it (every kind of declaration, not a curated subset of theorems)
