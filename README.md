@@ -3,13 +3,28 @@
 Machine-checked proofs of the AHL invariants, in Lean 4. This repository contains all three
 lemmas of the AHL invariants page (`ahl/docs-md/ahl-invariants.md`): **Lemma 1, record
 binding**, **Lemma 2, revocation completeness relative to a checkpoint**, and **Lemma 3,
-append-only consistency**. Their sources in the protocol document are the AHL I-D revision 0.4,
-Sections 2.6, 8.1 and 8.6 (Lemma 1); Sections 2.4, 5.1 to 5.4, 7.2 and the Section 7.5.1
+append-only consistency**. Their sources in the protocol document are the AHL I-D revision 0.4
+(which has no resolvable revision identifier yet — see "Immutable identifiers" in
+`reports/PROOF.md`), Sections 2.6, 8.1 and 8.6 (Lemma 1); Sections 2.4, 5.1 to 5.4, 7.2 and the Section 7.5.1
 erratum 4d (Lemma 2); and Sections 2.7, 3.1, 3.2, 7.4, 7.5 and 8.3 with RFC 9162 Section 2.1
 (Lemma 3).
 
-No `sorry`. No `axiom` declaration of our own: every assumption is a parameter or a structure
-field carrying a doc comment that cites the I-D section it comes from.
+**Scope, up front:** every theorem here is a theorem about the Lean model in the three
+`Model.lean` files, not about `ahl-core`/`atl-core`'s Rust code. There is no extraction and no
+refinement proof connecting the two; the only link is a conformance-vector test corpus, which is
+evidence, not a proof. See "What is NOT established" in `reports/PROOF.md` and "Relationship to
+the reference implementation" below before citing this repository as covering the
+implementation.
+
+No unfinished proof. No `axiom` declaration of our own: every assumption is a parameter or a
+structure field carrying a doc comment that cites the I-D section it comes from.
+`./scripts/check_axioms.sh` checks both claims by machine on every CI run, over every constant in
+the compiled `Lean.Environment` this repository produces — not a curated subset of theorems — and
+`lake build` itself also fails on the `declaration uses 'sorry'` warning alone. Read
+**"Trust boundary"** in `reports/PROOF.md` first: it states, in one place, what these checks
+establish and the thing they cannot establish — they live in the repository they check, so they
+are strong against forgetting and weak against intent. "Continuous integration and audit" below
+describes the mechanism.
 
 ## Build
 
@@ -29,6 +44,75 @@ required — that filtering by a strictly stronger predicate shortens a list, an
 removal — are eleven and eight lines respectively (`length_filter_lt_of_witness`, `nub`), so
 the dependency-free build is kept. A dependency-free build is faster to check and easier to
 audit, so it stays that way for as long as the lemmas allow.
+
+## Continuous integration and audit
+
+`.github/workflows/ci.yml` runs on every push (any branch) and every pull request. It installs
+Lean from the official release archive fetched by URL and **compared against a recorded SHA-256
+before it is unpacked** — not from a mutable tag whose identity is taken on the word of the
+binary it installs — then runs `lake build`, which fails on any Lean warning
+(`declaration uses 'sorry'` foremost, via `leanOptions.warningAsError` in `lakefile.toml`), and
+then the proof gate. `reports/TOOLCHAIN.md` gives the same install procedure for a human,
+step for step, and says exactly what the digest comparison does and does not establish — GitHub
+publishes those digests; the Lean developers publish no checksum file or signature for this
+release, and this repository says so rather than implying an upstream attestation.
+
+The gate is `./scripts/check_axioms.sh`, three layers in order:
+
+1. **The import invariant** (`scripts/check_imports.py`) — every `AhlProofs/**/*.lean` file found
+   on disk must be reachable by imports from the root module `AhlProofs.lean`. A file nobody
+   imports is never compiled, so it is never audited either, and both `lake build` and the audit
+   exit 0 while ignoring it entirely. That is ordinary forgetfulness, not an exotic attack, and
+   it is the most practical hole this gate closes.
+2. **The policy over source text** (`scripts/check_source_policy.py`) — four lexemes are rejected
+   in every `.lean` file in the working tree, with no allowlist of files or places. This is a
+   policy over sources, deliberately not a semantic check: it decides nothing about meaning, and
+   exists because each of those spellings is a way to leave the next layer with nothing to find —
+   a placeholder proof inside an `example` never becomes a constant in the environment, and a
+   declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
+   because nothing was checked.
+3. **The environment audit** (`scripts/Audit.lean`) — the semantic layer, and the one that
+   establishes what the proofs depend on. It does not discover its targets by parsing source
+   text. An earlier version did (`scripts/list_theorems.py` feeding
+   `scripts/check_axiom_output.py`, by regex over the `.lean` files), and that approach had two
+   proven blind spots: a visibility modifier before the keyword `axiom` (`private axiom foo :
+   False` was invisible to a regex anchored on the bare keyword), and a string literal containing
+   the two characters `/-` confusing the comment-stripper into deleting whatever declaration
+   followed. `scripts/Audit.lean` instead `import AhlProofs`s the already-built library and walks
+   the compiled `Lean.Environment` directly — every constant whose home module is under
+   `AhlProofs.*` (currently 645; not only the 102 named `theorem`/`lemma` declarations
+   `scripts/list_theorems.py` still counts, purely for the prose numbers in this document, with
+   no role in the audit any more) — checking, via `Lean.collectAxioms`, that none is our own
+   `axiom`, that none has an axiom outside `{propext, Classical.choice, Quot.sound}` in its
+   transitive closure (which is also how an unfinished proof is caught: it elaborates to the
+   axiom `sorryAx`, so no text search for the word is needed), and that the set of constants
+   whose closure contains `Classical.choice` is *exactly*
+   `{commit_plain_descriptor_collision}` — the claim `ahl/docs-md/priority-zero.md` makes,
+   checked here against every constant on every run, at a finer grain than the 102 named
+   theorems, and it still holds exactly.
+
+Six regression fixtures — an unimported module, an `example` under a locally relaxed
+`warningAsError`, a locally skipped kernel typecheck, an unfinished theorem, a top-level `axiom`,
+and a new file left out of the hash manifest — are **run in CI on every push and pull request**
+by `scripts/regression_fixtures.py`, immediately before the gate. Each fixture is applied to a
+throwaway copy of the repository, and the runner asserts not only that the pipeline exits
+nonzero but that the layer responsible for that fixture is the one that failed — a fixture that
+broke for an unrelated reason does not count as passing. The working tree is never written to,
+and the runner hashes every file under it before and after to prove it. `reports/PROOF.md`,
+"Required regression tests", lists all six with the exit status of every stage.
+
+`reports/PROOF.md` states what the three lemmas prove and — the part that matters most for anyone
+citing this repository — what they do **not**: there is no correspondence proof between this Lean
+model and the `ahl-core`/`atl-core` Rust code, only the test-corpus linkage described under
+"Relationship to the reference implementation" below. It also carries the **trust boundary** and
+the **immutable identifiers** of everything this model was compared against.
+`reports/TOOLCHAIN.md` records the toolchain pin and install procedure; `reports/PROOF.sha256`
+(`scripts/gen_proof_sha256.py --check` in CI, which also hashes the workflow file itself) is a
+same-commit internal-consistency check over every file that participates in the build or the
+audit tooling — not a proof of integrity or provenance, since it is generated and committed by
+the same process that could edit any of the files it covers — regenerated from a file *glob*
+rather than a hand-maintained list, so a new `.lean` file cannot go unaudited without CI noticing
+the manifest is stale.
 
 ## Lemma 1 — the model (invariants page Section 0)
 
@@ -257,13 +341,14 @@ names were aligned (`commit_plain`, `commit_keyed`, `DATASET_SEPARATOR`,
 convenience and not a proof.
 
 What connects them today is **test evidence**: the conformance vector corpus of `ahl-core`
-v0.3.1 (`test_data/`, at the crate's tagged revision) exercises the implementation on named
-inputs and records what it does with them. For Lemma 3 it is `test_data/vectors/merkle/` (`log-tree.json`, `batch-tree.json`,
+v0.3.1 — commit `4c30994df5d37548428785b3615b496800cd31cb`, `test_data/` at that commit —
+exercises the implementation on named inputs and records what it does with them. For Lemma 3 it is `test_data/vectors/merkle/` (`log-tree.json`, `batch-tree.json`,
 `input-set-tree.json`, `range-proof.json` among them), `test_data/vectors/checkpoints/` and the
 receipt vectors. Lemma 3 is a property of the **abstract model** in `AhlProofs/Tree/Model.lean`:
 the model follows RFC 9162 Section 2.1, the I-D Section 2.7 prefixes and the range-proof
 construction of `ahl-core/src/range_proof.rs` **by construction** — a modelling decision taken by
-reading those documents and that code, not a theorem — and neither `ahl-core` nor `atl-core` (to
+reading those documents and that code, not a theorem — and neither `ahl-core` nor `atl-core`
+(commit `79ac9c08585720cbd0de79a31662d99f68efb2f0`, the revision `ahl-core@4c30994` pins, to
 which `ahl-core` normatively delegates inclusion and consistency verification) is verified here.
 For Lemma 2 the corresponding material is
 `test_data/vectors/closure/` — six scenarios, among them `retraction-after-correction.json`
@@ -279,7 +364,13 @@ triples share a preimage with no hash collision involved.
 That is engineering linkage, not a proved binding. A finite corpus cannot establish that every
 path through an implementation validates `WF`, nor that its preimage construction refines
 `AhlProofs.pre`; it establishes that the named inputs produce the named results at the named
-revision. The word **bound** is reserved for a refinement argument, which does not exist yet.
+revision — the named revision being the commit SHAs above, which is what "Immutable identifiers"
+in `reports/PROOF.md` tabulates for all three artefacts. The word **bound** is reserved for a
+refinement argument, which does not exist yet.
 Until one does, the Lean results and the corpus results are two separate bodies of evidence
 about the same design — which is what invariants page Section 5 and the planned I-D
 Section 8.7.6 should be read as saying.
+
+## License
+
+Apache-2.0

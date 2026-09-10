@@ -1,0 +1,128 @@
+name: ci
+
+# Every push (any branch) and every pull request — matches the claim in README.md's
+# "Continuous integration and audit" section. A prior version restricted `push` to `branches:
+# [main]`, so a push to a branch with no open pull request was silently never checked; fixed by
+# dropping the branch filter.
+on:
+  push:
+  pull_request:
+
+jobs:
+  lean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # The identity of the toolchain this job runs, recorded here as *content*, not as a name.
+    #
+    # `lean-toolchain` pins `leanprover/lean4:v4.31.0`, which is a tag: a mutable ref that says
+    # which release to fetch, never which bytes. An earlier version of this job installed that
+    # tag through `elan` and then checked `lean --version` — a string the freshly installed
+    # binary prints about itself, which tells you nothing a substituted binary could not also
+    # print. This job instead downloads the official release archive by URL and verifies its
+    # SHA-256 *before* unpacking it, so the bytes that run are the bytes recorded below.
+    #
+    # LEAN_ASSET_SHA256 is the digest GitHub's release API reports for that asset
+    # (`assets[].digest` on
+    # https://api.github.com/repos/leanprover/lean4/releases/tags/v4.31.0), retrieved 2026-09-09.
+    # leanprover/lean4 publishes no checksum file and no signature of its own for this release —
+    # see reports/TOOLCHAIN.md for exactly what this check does and does not establish.
+    env:
+      EXPECTED_LEAN_VERSION: "4.31.0"
+      EXPECTED_LEAN_COMMIT: "68218e876d2a38b1985b8590fff244a83c321783"
+      LEAN_ASSET: "lean-4.31.0-linux.tar.zst"
+      LEAN_ASSET_SHA256: "07a633cc8d9151cbc08825ea4cdda50d4b02a2c9cb852c0131b13046f49cad7f"
+    steps:
+      # Pinned by commit SHA, not a mutable tag (`@v7`/`@v6` can be repointed by the action's
+      # publisher; the SHA cannot). Comment names the tag that SHA corresponds to, for humans.
+      - name: actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # The three cheap checks first: they need no toolchain, so a structural mistake fails in
+      # seconds instead of after a build. Layers 1 and 2 run again inside
+      # ./scripts/check_axioms.sh at the end of this job — that script is the single entry point
+      # a human runs locally, and it must give the same verdict there as here, so it owns the
+      # order and CI does not paraphrase it.
+      - name: Verify reports/PROOF.sha256 is current (content and file list)
+        run: python3 scripts/gen_proof_sha256.py --check
+
+      - name: Import invariant (every AhlProofs/**/*.lean is reachable from AhlProofs.lean)
+        run: python3 scripts/check_imports.py
+
+      - name: Source policy (forbidden lexemes in any .lean file)
+        run: python3 scripts/check_source_policy.py
+
+      # `lean-toolchain` stays the human-readable pin and must not drift from the archive this
+      # job actually installs. If someone bumps the toolchain file, this step fails and names the
+      # two other values (URL asset and digest) that have to be bumped with it.
+      - name: Cross-check lean-toolchain against the pinned archive
+        run: |
+          set -euo pipefail
+          expected="leanprover/lean4:v${EXPECTED_LEAN_VERSION}"
+          actual="$(tr -d '[:space:]' < lean-toolchain)"
+          echo "lean-toolchain: ${actual}"
+          if [ "${actual}" != "${expected}" ]; then
+            echo "PIN MISMATCH: lean-toolchain says '${actual}', this workflow installs '${expected}'"
+            echo "Bump EXPECTED_LEAN_VERSION, EXPECTED_LEAN_COMMIT, LEAN_ASSET and LEAN_ASSET_SHA256 together."
+            exit 1
+          fi
+
+      # No cache for the toolchain, deliberately. A cache restore is a copy of bytes from a
+      # store that a job on another branch can write to, and restoring it would bypass the
+      # SHA-256 check that is the whole point of this step. Downloading ~530 MB on every run
+      # costs a handful of seconds on a GitHub runner and keeps the guarantee unconditional:
+      # every run verifies the archive it is about to unpack.
+      - name: Install Lean from the pinned, checksummed release archive
+        run: |
+          set -euo pipefail
+          url="https://github.com/leanprover/lean4/releases/download/v${EXPECTED_LEAN_VERSION}/${LEAN_ASSET}"
+          echo "downloading ${url}"
+          curl -fsSL --retry 3 -o "${LEAN_ASSET}" "${url}"
+          echo "${LEAN_ASSET_SHA256}  ${LEAN_ASSET}" | sha256sum -c -
+          mkdir -p "${HOME}/lean-toolchain-install"
+          tar --zstd -xf "${LEAN_ASSET}" -C "${HOME}/lean-toolchain-install"
+          rm -f "${LEAN_ASSET}"
+          lean_bin="$(find "${HOME}/lean-toolchain-install" -type f -path '*/bin/lean' -perm -u+x -print -quit)"
+          if [ -z "${lean_bin}" ]; then
+            echo "INSTALL FAILED: no bin/lean found in the unpacked archive"
+            find "${HOME}/lean-toolchain-install" -maxdepth 2 -type d
+            exit 1
+          fi
+          dirname "${lean_bin}" >> "$GITHUB_PATH"
+
+      # Secondary diagnostic, not the identity check. The archive's digest is what establishes
+      # which bytes are installed; this confirms those bytes report the version and release
+      # commit this job expects, and would catch a mismatch between the recorded digest and the
+      # recorded version (i.e. a bump that changed one and forgot the other).
+      - name: Toolchain self-report (diagnostic, after the checksum)
+        run: |
+          set -euo pipefail
+          actual="$(lean --version)"
+          echo "lean --version: $actual"
+          case "$actual" in
+            *"version ${EXPECTED_LEAN_VERSION}"*"commit ${EXPECTED_LEAN_COMMIT}"*) ;;
+            *)
+              echo "TOOLCHAIN MISMATCH: expected version ${EXPECTED_LEAN_VERSION}, commit ${EXPECTED_LEAN_COMMIT}"
+              echo "got: $actual"
+              exit 1
+              ;;
+          esac
+          lake --version
+
+      - name: "lake build (dependency-free: no Mathlib, no packages)"
+        run: |
+          set -euo pipefail
+          lake clean
+          time lake build
+
+      # The claim in reports/PROOF.md that six specific mistakes each break this pipeline, and
+      # that a named layer catches each one, is re-established here on every run rather than
+      # reported from a person's memory of having tried it once. Each fixture is applied to a
+      # throwaway copy of the repository under the system temp directory — the working tree is
+      # never written to, and the runner hashes every file under it before and after to prove
+      # that. It runs BEFORE the gate below on purpose: the gate then has to pass on the same
+      # tree, which is what shows the fixtures left nothing behind.
+      - name: Regression fixtures (each must fail, and fail at its own layer)
+        run: python3 scripts/regression_fixtures.py
+
+      - name: Proof gate (imports, source policy, environment axiom audit)
+        run: ./scripts/check_axioms.sh

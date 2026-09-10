@@ -1,6 +1,11 @@
 name = "ahl-proofs"
 version = "0.1.0"
 defaultTargets = ["AhlProofs"]
+# Every Lean warning is a build failure, `declaration uses 'sorry'` foremost among them: the
+# compiler already flags every `sorry` itself, at zero extra tooling cost, and CI must not be
+# able to go green while that warning is on screen. See scripts/Audit.lean for the axiom/`sorry`
+# audit proper; this is the second, independent, much cheaper check of the same property.
+leanOptions = [["warningAsError", true]]
 
 [[lean_lib]]
 name = "AhlProofs"
