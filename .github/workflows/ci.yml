@@ -114,8 +114,9 @@ jobs:
           lake clean
           time lake build
 
-      # The claim in reports/PROOF.md that six specific mistakes each break this pipeline, and
-      # that a named layer catches each one, is re-established here on every run rather than
+      # The claim in reports/PROOF.md that 6 failure modes, exercised by 7 fixture runs, each
+      # break this pipeline, and that a named layer catches each one, is re-established here on
+      # every run rather than
       # reported from a person's memory of having tried it once. Each fixture is applied to a
       # throwaway copy of the repository under the system temp directory — the working tree is
       # never written to, and the runner hashes every file under it before and after to prove
@@ -126,3 +127,11 @@ jobs:
 
       - name: Proof gate (imports, source policy, environment axiom audit)
         run: ./scripts/check_axioms.sh
+
+      # reports/PROOF.sha256 does not hash the prose documents, on purpose. This step is what
+      # keeps them from drifting anyway: every number they repeat, and every transcript they
+      # publish, is compared against what the commands print on this run. It deliberately does
+      # not try to validate the mathematics or the section references — see "Trust boundary" in
+      # reports/PROOF.md for where that line is drawn.
+      - name: Document claims (numbers and transcripts vs. what the checks print)
+        run: python3 scripts/check_doc_claims.py

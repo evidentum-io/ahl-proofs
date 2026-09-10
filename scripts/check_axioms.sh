@@ -31,9 +31,9 @@
 # already produced up-to-date `.olean`s (CI runs the build as its own prior step; see
 # .github/workflows/ci.yml) — it does not rebuild anything itself.
 #
-# That these three layers still work is itself tested: scripts/regression_fixtures.py applies six
-# known ways of breaking this repository to throwaway copies of it and requires each to fail at
-# the layer that owns it. CI runs it immediately before this script.
+# That these three layers still work is itself tested: scripts/regression_fixtures.py applies 6
+# known ways of breaking this repository, in 7 fixture runs, to throwaway copies of it and
+# requires each to fail at the layer that owns it. CI runs it immediately before this script.
 #
 # What none of this defends against: a participant with write access editing these checks
 # themselves. See "Trust boundary" in reports/PROOF.md, stated there rather than implied here.

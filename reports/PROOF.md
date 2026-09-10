@@ -7,8 +7,13 @@ audit trail: exact theorem names, exact axiom dependencies, exact commands to re
 
 ## Trust boundary
 
-Read this before the results, not after. Four checks stand between "the sources in this
-repository" and "the claims in this document", and they cover different things:
+Read this before the results, not after.
+
+Four checks stand between the **sources** of this repository and the **pipeline** that reports on
+them. They do not stand between the sources and this document: `reports/PROOF.sha256` deliberately
+does not hash the prose files, and prose is not something a build can validate. A fifth check
+closes as much of that gap as can honestly be closed by machine — see "What is checked about this
+document" below. The four:
 
 * **The environment audit** — `scripts/Audit.lean`. It enumerates the constants of the
   *compiled* library (every `def`, `instance`, `private` declaration and generated helper, not a
@@ -23,9 +28,9 @@ repository" and "the claims in this document", and they cover different things:
   declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
   because nothing was checked. It is a layer on top of the environment audit and never a
   substitute for it.
-* **The regression fixtures** — `scripts/regression_fixtures.py`. Six ways of breaking this
-  repository, each applied to a throwaway copy of it, each required to fail *and* to fail at the
-  layer that owns it. This is what keeps the other three honest: a layer that stopped working
+* **The regression fixtures** — `scripts/regression_fixtures.py`. 7 fixture runs covering 6
+  failure modes of this repository, each applied to a throwaway copy of it, each required to fail
+  *and* to fail at the layer that owns it. This is what keeps the other three honest: a layer that stopped working
   would turn a fixture green, and a green fixture is a red CI run. It is run in CI immediately
   before the gate, so the gate has to pass on the same tree afterwards. See "Required regression
   tests".
@@ -34,6 +39,33 @@ repository" and "the claims in this document", and they cover different things:
   what was built — and therefore what the environment audit can see — is everything that is
   there. Without it, a file nobody imports is neither compiled nor audited, and both `lake build`
   and the audit exit 0 while ignoring it completely.
+
+### What is checked about this document
+
+`scripts/check_doc_claims.py`, run in CI after the gate, compares this document, `README.md` and
+`reports/TOOLCHAIN.md` against what the checks actually print:
+
+* the `./scripts/check_axioms.sh` transcript, the `gen_proof_sha256.py --check` line and the
+  regression-fixture table published below must be **verbatim** what those commands produce now;
+* every count repeated in a sentence — constants scanned, named theorems and the files they live
+  in, files in the hash manifest, fixture runs and failure modes — must equal the computed value,
+  in every place it appears;
+* the Lean version, release commit and Linux archive digest quoted here must match
+  `.github/workflows/ci.yml` and `lean-toolchain`;
+* the fixture table below must list exactly the fixtures `scripts/regression_fixtures.py`
+  declares.
+
+A claim whose pattern that script can no longer find is a failure there, not a silent skip, so
+rewording a checked sentence out of the checker's reach fails CI rather than escaping it.
+
+**Everything else in these documents is maintained by hand and is not machine-checked**: the
+mathematical account, the I-D and RFC section references, the lemma tables, the boundary text, the
+build timings and the `12 jobs` figure (illustrative and machine-dependent by construction), and
+every argument made in prose anywhere. If a sentence here is wrong about the mathematics, no step
+of CI will say so. What CI can say is that the numbers and the transcripts are not stale, and it
+now does.
+
+### What the four checks are for
 
 Together they protect against **accidental incompleteness**, which is the realistic failure here:
 a file added and not imported, a proof left unfinished, a build setting relaxed for one
@@ -51,6 +83,16 @@ itself. There is no external anchor, no signature over the sources, no attestati
 this repository. A reader relying on this evidence is relying on the published CI log for a named
 commit, and on review of that commit's diff — the diff of the checks included — not on the checks
 being tamper-proof, because they are not.
+
+**The watchdog needs watching too, and this is what it has.** The regression runner is the
+component that keeps the other layers honest, so its own failure mode matters: a loop over an
+empty fixture list satisfies every assertion in it. That is closed by a roster declared apart from
+the fixtures and validated before any of them runs — emptying `FIXTURES`, dropping one fixture, or
+duplicating an identifier each fail the run and print the expected roster. It is not closed
+against an edit that changes the roster too: `DECLARED_RUNS` sits in the same file. What that edit
+costs is three places in one commit, because `scripts/check_doc_claims.py` compares the roster
+against the fixture table published in this document. Three agreeing edits is a higher bar than
+one, and it is not a guarantee; naming the bar is the honest thing to do with it.
 
 That is the honest shape of the guarantee: strong against forgetting, weak against intent.
 
@@ -253,9 +295,10 @@ a library that just finished building — the two conditions cannot both hold.
 
 ### Required regression tests
 
-Six ways for this pipeline to be wrong. Each one must make the pipeline exit nonzero **and must
-be caught by the layer responsible for it** — a fixture that failed for some unrelated reason
-would satisfy "exits nonzero" and prove nothing.
+**7 fixture runs covering 6 failure modes** — six ways for this pipeline to be wrong, one of them
+exercised twice with a different set of layers active (see 6 and 6b below). Each run must make the
+pipeline exit nonzero **and must be caught by the layer responsible for it** — a fixture that
+failed for some unrelated reason would satisfy "exits nonzero" and prove nothing.
 
 **This is a test, not a report of one.** `scripts/regression_fixtures.py` applies every fixture
 and asserts the exact exit status of every stage (`lake build`, import invariant, source policy,
@@ -263,9 +306,20 @@ environment audit, hash manifest), the identity of the layer that must fail, and
 layer's output must contain. `.github/workflows/ci.yml` runs it on every push and every pull
 request, immediately before the ordinary gate — so the gate then has to pass on the same tree,
 which is what demonstrates the fixtures left nothing behind. An earlier version of this section
-described the same six fixtures in the present tense on the strength of a person having run them
+described the same fixtures in the present tense on the strength of a person having run them
 once by hand; nothing re-established that, and nothing would have noticed a layer being removed
 while this prose went on describing it.
+
+**The runner cannot pass while running nothing.** `FIXTURES` is a list, and a loop over an empty
+list satisfies every assertion in it — which is how an earlier version of this runner could be
+emptied and still print success, the same defect that got this repository's first static audit
+manifest rejected. `scripts/regression_fixtures.py` therefore declares its roster separately
+(`DECLARED_RUNS`, `DECLARED_MODES`) and validates the fixtures against it *before* the first one
+runs: the exact identifiers, in that order, with no duplicates, no additions and no omissions,
+each carrying a layer under test that is itself declared to fail and an expected reason string.
+Emptying the list, deleting one fixture, or duplicating an id each fail the run with the roster
+printed. What this does not close is an edit to `DECLARED_RUNS` in the same commit — that is
+stated under "Trust boundary", along with the third place the same edit would have to be made.
 
 **How the working tree is kept clean.** The runner never writes to the working tree. Every
 fixture is applied to a fresh copy of the repository in a system temporary directory (`.git`,
@@ -273,9 +327,13 @@ fixture is applied to a fresh copy of the repository in a system temporary direc
 `finally` block. Because the copy lives outside the repository, a fixture's `.lean` file is
 outside the globs `scripts/check_source_policy.py` and `scripts/gen_proof_sha256.py` walk: it
 cannot enter the hash manifest and cannot enter the built library. That is the guarantee by
-construction; it is also verified, because the runner takes a SHA-256 snapshot of every file
-under the real root before the first fixture and again after the last and fails if anything at
-all differs.
+construction; it is also verified, within a scope worth stating exactly. The runner takes a
+SHA-256 snapshot before the first fixture and again after the last of every file under the real
+root **except `.git/`, `.lake/` and `__pycache__/`** — git metadata, build output and bytecode
+caches, none of them repository content — and fails if a single byte, path, addition or deletion
+differs among the files it hashes. Those three are safe to omit rather than merely convenient:
+the runner never invokes git and never builds in the real tree, only in the copies. The published
+summary line names the exclusions and the file count, so the scope of the claim travels with it.
 
 The table below is the runner's own output on the tree this document describes (`0` = the stage
 exited 0, `1` = exited nonzero, `-` = not run):
@@ -290,8 +348,7 @@ exited 0, `1` = exited nonzero, `-` = not run):
        6  manifest         0         1         0         0         1   ok
       6b  manifest         0         0         0         0         1   ok
 
-all 7 fixture(s) behaved as declared: each broke the pipeline, and each was caught by the layer
-named for it. Working tree unchanged (27 file(s) hashed before and after).
+all 7 fixture run(s) covering 6 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
 ```
 
 | # | Fragment | Layer under test | Why that layer, and why not another |
@@ -442,7 +499,7 @@ manifest is stale), every audit script, and `.github/workflows/ci.yml` itself:
 
 ```
 $ python3 scripts/gen_proof_sha256.py --check
-reports/PROOF.sha256 is current (21 file(s))
+reports/PROOF.sha256 is current (22 file(s))
 ```
 
 CI runs this check first. **What this manifest is, and is not.** It is a same-commit
@@ -466,6 +523,7 @@ python3 scripts/gen_proof_sha256.py --check
 lake clean && time lake build
 python3 scripts/regression_fixtures.py
 ./scripts/check_axioms.sh
+python3 scripts/check_doc_claims.py
 ```
 
 `scripts/regression_fixtures.py` is the slowest of these — it builds the library once per

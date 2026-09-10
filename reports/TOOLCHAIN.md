@@ -31,13 +31,20 @@ The toolchain is installed from the official release **archive**, fetched by its
 release URL and compared against a recorded SHA-256 **before** it is unpacked. `lean --version`
 is checked afterwards as a diagnostic, not as the identity check.
 
-**Run the script below as a script, not by pasting lines into a shell.** It is written with
-`set -eu` and it *exits nonzero* on a digest mismatch and on a version or release-commit
-mismatch — the same two failures that fail the `lean` job of `.github/workflows/ci.yml`, with the
-same pinned URL, the same comparison and the same expected values. Read line by line and typed by
-hand, it would print the same output and stop at nothing; the equivalence claimed here is between
-CI and *running this file*, and it is why it is a file. An earlier version of this section
-suggested piping an installer script from a mutable branch with no comparison at all.
+**Run the script below as a script, not by pasting lines into a shell, and then run the `export`
+and the two guards that follow it.** The script is written with `set -eu` and *exits nonzero* on a
+digest mismatch and on a version or release-commit mismatch — the same two failures that fail the
+`lean` job of `.github/workflows/ci.yml`, with the same pinned URL, the same comparison and the
+same expected values. Pasted line by line it would print the same output and stop at nothing,
+which is why it is a file.
+
+The equivalence claimed here is therefore precise: **this section as a whole** — the script, the
+`export`, and the two guards — establishes locally what the `lean` job establishes in CI. The
+script alone does not, because a `PATH` set inside a child process dies with it; CI persists the
+directory through `$GITHUB_PATH` and a local shell has to be told. Both earlier versions of this
+section got that wrong in different ways: the first piped an installer from a mutable branch with
+no comparison at all, the second verified the archive and then let the reader build with whatever
+`lean` was already on their `PATH`.
 
 Pick the archive for your platform:
 
@@ -48,6 +55,15 @@ Pick the archive for your platform:
 | macOS aarch64 (Apple silicon; the machine this file records) | `lean-4.31.0-darwin_aarch64.tar.zst` | `264105500c8abdf37b68ffe03390a783ed259807807222698da8dd92d6ce0a27` |
 | macOS x86-64 | `lean-4.31.0-darwin.tar.zst` | `6dac7a8f9d6d0bc339b4ea9376c06a88f3fd1a7f462beb3c7ded9fbc934f3fb5` |
 
+**Where the toolchain lands, and why that matters.** The script below installs into one fixed,
+version-named directory — `$HOME/.local/lean-4.31.0` — rather than wherever an archive happens to
+unpack. That is what makes the second half of this procedure checkable: the `PATH` a script exports
+dies with the script, so an earlier version of this section, which said `sh install-lean.sh` and
+then told the reader to build, could leave a person building with whatever other `lean` was already
+on their `PATH` and never notice. CI does not have that problem because it writes the directory to
+`$GITHUB_PATH`, which persists across steps. A fixed install path plus an explicit `export` plus a
+re-check of *which* `lean` is being used is the local equivalent.
+
 Save this as `install-lean.sh` and run it with `sh install-lean.sh`:
 
 ```sh
@@ -56,37 +72,45 @@ Save this as `install-lean.sh` and run it with `sh install-lean.sh`:
 # unpacked and the toolchain before it is used. Exits nonzero at the first failure.
 set -eu
 
-# --- from the table above; change both together, never one alone ---------------------------
+# --- from the table above; change all four together, never one alone ------------------------
 ASSET=lean-4.31.0-darwin_aarch64.tar.zst
 DIGEST=264105500c8abdf37b68ffe03390a783ed259807807222698da8dd92d6ce0a27
 EXPECTED_LEAN_VERSION=4.31.0
 EXPECTED_LEAN_COMMIT=68218e876d2a38b1985b8590fff244a83c321783
-PREFIX="$HOME/lean-toolchain-install"
+
+PREFIX="$HOME/.local/lean-${EXPECTED_LEAN_VERSION}"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
 
 # 1. Fetch the archive by its versioned release URL. The URL selects a release; the digest
 #    below is what actually pins the bytes.
-curl -fsSL --retry 3 -O "https://github.com/leanprover/lean4/releases/download/v${EXPECTED_LEAN_VERSION}/${ASSET}"
+curl -fsSL --retry 3 -o "${WORK}/${ASSET}" \
+  "https://github.com/leanprover/lean4/releases/download/v${EXPECTED_LEAN_VERSION}/${ASSET}"
 
 # 2. Compare the digest BEFORE unpacking. `-c` exits nonzero on a mismatch, and `set -e` stops
 #    the script here.
+cd "${WORK}"
 if command -v sha256sum >/dev/null 2>&1; then
   echo "${DIGEST}  ${ASSET}" | sha256sum -c -
 else
   echo "${DIGEST}  ${ASSET}" | shasum -a 256 -c -    # macOS, no GNU coreutils
 fi
 
-# 3. Unpack and put its bin/ on PATH.
-mkdir -p "${PREFIX}"
-tar --zstd -xf "${ASSET}" -C "${PREFIX}"             # needs zstd; or: unzstd + tar -xf
-LEAN_BIN="$(dirname "$(find "${PREFIX}" -type f -path '*/bin/lean' -print -quit)")"
-[ -n "${LEAN_BIN}" ] || { echo "INSTALL FAILED: no bin/lean in the unpacked archive"; exit 1; }
-PATH="${LEAN_BIN}:${PATH}"
-export PATH
+# 3. Unpack, then move the toolchain to one fixed, version-named directory, so that every later
+#    command can name it explicitly instead of hoping PATH is right.
+mkdir -p "${WORK}/unpacked"
+tar --zstd -xf "${ASSET}" -C "${WORK}/unpacked"      # needs zstd; or: unzstd + tar -xf
+FOUND="$(find "${WORK}/unpacked" -type f -path '*/bin/lean' -print -quit)"
+[ -n "${FOUND}" ] || { echo "INSTALL FAILED: no bin/lean in the unpacked archive"; exit 1; }
+TOOLCHAIN_ROOT="$(dirname "$(dirname "${FOUND}")")"
+rm -rf "${PREFIX}"
+mkdir -p "$(dirname "${PREFIX}")"
+mv "${TOOLCHAIN_ROOT}" "${PREFIX}"
 
-# 4. Require the toolchain to report the version and release commit this repository expects.
-#    This is the same comparison, with the same values, that CI performs — and it fails the
-#    same way.
-actual="$(lean --version)"
+# 4. Require the installed toolchain to report the version and release commit this repository
+#    expects. This is the same comparison, with the same values, that CI performs, and it fails
+#    the same way. Note it invokes the binary by its full path: nothing here depends on PATH.
+actual="$("${PREFIX}/bin/lean" --version)"
 echo "lean --version: ${actual}"
 case "${actual}" in
   *"version ${EXPECTED_LEAN_VERSION}"*"commit ${EXPECTED_LEAN_COMMIT}"*) ;;
@@ -97,16 +121,44 @@ case "${actual}" in
     ;;
 esac
 
-echo "toolchain verified; add ${LEAN_BIN} to PATH in your shell to build"
+echo
+echo "verified toolchain installed at ${PREFIX}"
+echo "now run this in your own shell:"
+echo
+echo "    export PATH=\"${PREFIX}/bin:\$PATH\""
 ```
 
-Only once that script has exited 0, and with `${LEAN_BIN}` on `PATH`:
+The script exits 0 only if the digest matched and the installed binary reported the expected
+version and release commit. **Its `PATH` is its own**, so the next step is not optional — run this
+in the shell you will build in, then confirm that the `lean` you are about to use is the one that
+was just verified:
+
+```sh
+export PATH="$HOME/.local/lean-4.31.0/bin:$PATH"
+
+# Both of these must hold before building. The first says you are using the verified install and
+# not some other Lean that was already on PATH; the second repeats CI's identity check in the
+# shell that will actually run the build.
+[ "$(command -v lean)" = "$HOME/.local/lean-4.31.0/bin/lean" ] \
+  || echo "WRONG LEAN ON PATH: $(command -v lean)"
+lean --version | grep -q "commit 68218e876d2a38b1985b8590fff244a83c321783" \
+  || echo "TOOLCHAIN MISMATCH: not the pinned release"
+```
+
+(`. ./install-lean.sh` — with the leading dot — would also leave the toolchain on `PATH`, since
+sourcing runs the script in the current shell. It is not the instruction here because it also
+leaves `set -e` and the script's variables behind in that shell, and because a fixed install path
+makes "which `lean` am I using" answerable at any later moment rather than only right after
+sourcing.)
+
+Only once all of the above has passed:
 
 ```sh
 cd ahl-proofs
 lake clean && time lake build          # cold: 12 jobs, low single-digit seconds, exit 0
 ./scripts/check_axioms.sh              # three-layer proof gate, exit 0 on PASS
-python3 scripts/regression_fixtures.py # the six regression fixtures, exit 0 when each still fails
+python3 scripts/regression_fixtures.py # 7 fixture runs covering 6 failure modes, exit 0 when each still fails
+python3 scripts/check_doc_claims.py    # documents' numbers and transcripts vs. what the checks print
 ```
 
 `lean-toolchain` still names `leanprover/lean4:v4.31.0` and is still the human-readable pin;

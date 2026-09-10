@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Machine-checked regression fixtures for the proof gate.
 
-`reports/PROOF.md` claims that six ways of breaking this repository each fail the pipeline, and
+`reports/PROOF.md` claims that 6 ways of breaking this repository each fail the pipeline (in 7
+fixture runs — one mode is exercised twice, with different layers active), and
 names the layer that catches each one. Until this script existed, that claim was a report of
 something a person once did by hand — nothing in CI re-established it, so nothing stopped a
 change from quietly removing a layer while the prose went on describing it. This script turns the
@@ -28,10 +29,22 @@ repository, so a fixture's `.lean` file cannot be picked up by `scripts/check_so
 or `scripts/gen_proof_sha256.py`'s globs over the real root, cannot enter the hash manifest, and
 cannot enter the built library.
 
-That is the guarantee by construction. It is also checked: this script takes a SHA-256 snapshot of
-every file under the real repository root before the first fixture and again after the last, and
-fails if a single byte, path, addition or deletion differs. So "the runner left the tree alone" is
-verified rather than asserted.
+That is the guarantee by construction. It is also checked, within a stated scope: this script
+takes a SHA-256 snapshot of every file under the real repository root **except `.git/`, `.lake/`
+and `__pycache__/`** — git metadata, build output and bytecode caches, none of them repository
+content — before the first fixture and again after the last, and fails if a single byte, path,
+addition or deletion differs among the files it hashes. The three exclusions are safe to leave out
+rather than merely convenient: this runner never invokes git and never builds in the real tree, it
+builds only in the copies. So "the runner left the repository's own files alone" is verified
+rather than asserted; "it left the build directory alone" is a property of never having touched
+it, not something this snapshot demonstrates.
+
+## What checks this runner
+
+Nothing here would notice `FIXTURES` being emptied — a loop over an empty list satisfies every
+assertion in it — so that case is closed before the loop: `validate_roster()` requires the exact
+declared identifiers, in order, without duplicates, each with a layer under test that is actually
+declared to fail. See `DECLARED_RUNS` for what that does and does not buy.
 
 Usage:
     regression_fixtures.py [--root DIR] [--verbose]   # exit 0 iff all fixtures behave as declared
@@ -130,6 +143,7 @@ def fixture_6b(root: pathlib.Path) -> None:
 FIXTURES = [
     {
         "id": "1",
+        "mode": "1",
         "title": "module outside the root module's import list",
         "apply": fixture_1,
         "regen_manifest": True,
@@ -139,6 +153,7 @@ FIXTURES = [
     },
     {
         "id": "2",
+        "mode": "2",
         "title": "declaration storing no constant, under a locally relaxed build setting",
         "apply": fixture_2,
         "regen_manifest": True,
@@ -148,6 +163,7 @@ FIXTURES = [
     },
     {
         "id": "3",
+        "mode": "3",
         "title": "kernel re-typechecking locally disabled",
         "apply": fixture_3,
         "regen_manifest": True,
@@ -157,6 +173,7 @@ FIXTURES = [
     },
     {
         "id": "4",
+        "mode": "4",
         "title": "ordinary unfinished theorem",
         "apply": fixture_4,
         "regen_manifest": True,
@@ -166,6 +183,7 @@ FIXTURES = [
     },
     {
         "id": "5",
+        "mode": "5",
         "title": "own axiom at top level",
         "apply": fixture_5,
         "regen_manifest": True,
@@ -175,6 +193,7 @@ FIXTURES = [
     },
     {
         "id": "6",
+        "mode": "6",
         "title": "new file under AhlProofs/, manifest left stale",
         "apply": fixture_6,
         "regen_manifest": False,
@@ -184,6 +203,7 @@ FIXTURES = [
     },
     {
         "id": "6b",
+        "mode": "6",
         "title": "same file, imported — isolating the manifest layer from the import invariant",
         "apply": fixture_6b,
         "regen_manifest": False,
@@ -194,6 +214,75 @@ FIXTURES = [
 ]
 
 STAGES = ["build", "imports", "policy", "audit", "manifest"]
+
+# The roster this runner is required to execute, declared separately from the fixtures themselves
+# and checked against them before anything runs.
+#
+# Why this exists. Without it, emptying `FIXTURES` makes the loop below iterate zero times, every
+# assertion vacuously hold, and the summary line report success over nothing — the same shape of
+# defect as a static audit manifest that passes when truncated to empty, which is what the first
+# version of this repository's gate was rejected for. A watchdog that can pass while watching
+# nothing is not a watchdog. So: the exact identifiers, in order, with no duplicates and no
+# additions, or this runner fails before it starts.
+#
+# What this does not fix. `DECLARED_RUNS` lives in the same file as `FIXTURES`, so someone editing
+# both together still gets a green run. That is not closed here and cannot be, but it is made
+# more expensive: `scripts/check_doc_claims.py` compares this roster against the fixture table
+# published in reports/PROOF.md, so the same edit has to be made in three places, in one commit,
+# to go unnoticed. See "Trust boundary" in reports/PROOF.md.
+DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b")
+DECLARED_MODES = ("1", "2", "3", "4", "5", "6")
+REQUIRED_KEYS = {"id", "mode", "title", "apply", "regen_manifest", "expect", "layer", "reason"}
+
+
+def validate_roster() -> list[str]:
+    """Structural checks on FIXTURES itself, run before any fixture does. Returns problems."""
+    problems: list[str] = []
+    if not FIXTURES:
+        return ["FIXTURES is empty — a run that executes no fixture must never report success"]
+
+    ids = [f.get("id") for f in FIXTURES]
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        problems.append(f"duplicate fixture id(s): {duplicates}")
+    if tuple(ids) != DECLARED_RUNS:
+        missing = [i for i in DECLARED_RUNS if i not in ids]
+        extra = [i for i in ids if i not in DECLARED_RUNS]
+        problems.append(
+            f"fixture roster does not match the declared set: expected {list(DECLARED_RUNS)} in "
+            f"that order, got {ids}"
+            + (f"; missing {missing}" if missing else "")
+            + (f"; unexpected {extra}" if extra else "")
+        )
+
+    modes = sorted({f.get("mode") for f in FIXTURES})
+    if modes != sorted(DECLARED_MODES):
+        problems.append(
+            f"failure modes covered do not match the declared set: expected "
+            f"{sorted(DECLARED_MODES)}, got {modes}"
+        )
+
+    for f in FIXTURES:
+        fid = f.get("id", "<no id>")
+        missing_keys = REQUIRED_KEYS - set(f)
+        if missing_keys:
+            problems.append(f"fixture {fid}: missing key(s) {sorted(missing_keys)}")
+            continue
+        if set(f["expect"]) != set(STAGES):
+            problems.append(
+                f"fixture {fid}: `expect` must give a value for every stage {STAGES}, got "
+                f"{sorted(f['expect'])}"
+            )
+        if f["layer"] not in STAGES:
+            problems.append(f"fixture {fid}: layer under test {f['layer']!r} is not a stage")
+        elif f["expect"].get(f["layer"]) in (0, None):
+            problems.append(
+                f"fixture {fid}: layer under test `{f['layer']}` is not declared to fail, so the "
+                "fixture would assert nothing about it"
+            )
+        if not str(f.get("reason", "")).strip():
+            problems.append(f"fixture {fid}: no expected reason substring for its layer")
+    return problems
 
 COMMANDS = {
     "build": ["lake", "build"],
@@ -286,12 +375,66 @@ def run_fixture(spec: dict, root: pathlib.Path, verbose: bool) -> tuple[bool, di
     return not problems, actual, problems
 
 
+def render_table(rows: list[tuple[str, str, dict, bool]], hashed: int) -> str:
+    """The runner's own report, in the exact form a passing run prints it.
+
+    `--expected-table` renders this from the *declared* expectations without running anything, so
+    a document can be checked against it cheaply (`scripts/check_doc_claims.py` does exactly
+    that). That is sound only because a run asserts actual == expected for every stage of every
+    fixture and fails otherwise: the expected table and the observed table are the same table on
+    any run that succeeds, and on a run that does not succeed nothing is published.
+    """
+    width = max(len(s) for s in STAGES)
+    header = "  ".join(s.rjust(width) for s in STAGES)
+    lines = [f"{'fixture':>8}  {'layer':>8}  {header}"]
+    for fid, layer, actual, ok in rows:
+        cells = "  ".join(
+            ("-" if actual.get(s) is None else str(actual[s])).rjust(width) for s in STAGES
+        )
+        lines.append(f"{fid:>8}  {layer:>8}  {cells}   {'ok' if ok else 'FAILED'}")
+    lines.append("")
+    lines.append(
+        f"all {len(DECLARED_RUNS)} fixture run(s) covering {len(DECLARED_MODES)} failure mode(s) "
+        "behaved as declared: each broke the pipeline, and each was caught by the layer named "
+        f"for it. Working tree unchanged ({hashed} file(s) hashed before and after, excluding "
+        + ", ".join(sorted(f"{d}/" for d in EXCLUDED))
+        + ")."
+    )
+    return "\n".join(lines)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".", help="repository root (default: cwd)")
     ap.add_argument("--verbose", action="store_true", help="print every stage's output")
+    ap.add_argument(
+        "--expected-table",
+        action="store_true",
+        help="print the report a passing run produces, without running the fixtures",
+    )
     args = ap.parse_args()
     root = pathlib.Path(args.root).resolve()
+
+    # Before anything else: is this runner about to run the fixtures it claims to run? A loop over
+    # an empty or truncated list would satisfy every assertion below without executing anything.
+    roster_problems = validate_roster()
+    if roster_problems:
+        print("regression_fixtures.py: FAIL — the fixture roster is not the declared one",
+              file=sys.stderr)
+        for problem in roster_problems:
+            print(f"  - {problem}", file=sys.stderr)
+        print(
+            f"\nExpected exactly {list(DECLARED_RUNS)} covering failure modes "
+            f"{list(DECLARED_MODES)}. A run that executes fewer fixtures than it claims must "
+            "fail, not pass quietly.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.expected_table:
+        rows = [(f["id"], f["layer"], f["expect"], True) for f in FIXTURES]
+        print(render_table(rows, len(snapshot(root))))
+        return 0
 
     before = snapshot(root)
     if not before:
@@ -300,8 +443,10 @@ def main() -> int:
 
     rows: list[tuple[str, str, dict, bool]] = []
     failures: list[str] = []
+    executed = 0
     for spec in FIXTURES:
         ok, actual, problems = run_fixture(spec, root, args.verbose)
+        executed += 1
         rows.append((spec["id"], spec["layer"], actual, ok))
         if not ok:
             failures.append(
@@ -309,36 +454,29 @@ def main() -> int:
                 + "\n    - ".join(problems)
             )
 
+    if executed != len(DECLARED_RUNS):
+        failures.append(
+            f"{executed} fixture(s) ran but {len(DECLARED_RUNS)} were declared — a partial run "
+            "must never be reported as a complete one"
+        )
+
     after = snapshot(root)
     if before != after:
         changed = sorted(
             set(before) ^ set(after)
         ) + sorted(k for k in set(before) & set(after) if before[k] != after[k])
         failures.append(
-            "the working tree changed while the fixtures ran — this runner must leave it "
-            "byte-for-byte identical: " + ", ".join(changed)
+            "the working tree changed while the fixtures ran — this runner must leave every file "
+            "it hashes byte-for-byte identical: " + ", ".join(changed)
         )
 
-    width = max(len(s) for s in STAGES)
-    header = "  ".join(s.rjust(width) for s in STAGES)
-    print(f"{'fixture':>8}  {'layer':>8}  {header}")
-    for fid, layer, actual, ok in rows:
-        cells = "  ".join(
-            ("-" if actual.get(s) is None else str(actual[s])).rjust(width) for s in STAGES
-        )
-        print(f"{fid:>8}  {layer:>8}  {cells}   {'ok' if ok else 'FAILED'}")
+    print(render_table(rows, len(before)))
 
     if failures:
         print("\nregression_fixtures.py: FAIL", file=sys.stderr)
         for f in failures:
             print(f"  - {f}", file=sys.stderr)
         return 1
-
-    print(
-        f"\nall {len(FIXTURES)} fixture(s) behaved as declared: each broke the pipeline, and each "
-        "was caught by the layer named for it. Working tree unchanged "
-        f"({len(before)} file(s) hashed before and after)."
-    )
     return 0
 
 

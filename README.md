@@ -91,15 +91,24 @@ The gate is `./scripts/check_axioms.sh`, three layers in order:
    checked here against every constant on every run, at a finer grain than the 102 named
    theorems, and it still holds exactly.
 
-Six regression fixtures — an unimported module, an `example` under a locally relaxed
-`warningAsError`, a locally skipped kernel typecheck, an unfinished theorem, a top-level `axiom`,
-and a new file left out of the hash manifest — are **run in CI on every push and pull request**
-by `scripts/regression_fixtures.py`, immediately before the gate. Each fixture is applied to a
-throwaway copy of the repository, and the runner asserts not only that the pipeline exits
-nonzero but that the layer responsible for that fixture is the one that failed — a fixture that
-broke for an unrelated reason does not count as passing. The working tree is never written to,
-and the runner hashes every file under it before and after to prove it. `reports/PROOF.md`,
-"Required regression tests", lists all six with the exit status of every stage.
+**7 fixture runs covering 6 failure modes** — an unimported module, an `example` under a locally
+relaxed `warningAsError`, a locally skipped kernel typecheck, an unfinished theorem, a top-level
+`axiom`, and a new file left out of the hash manifest (that last one run twice, with and without
+its `import` line, to show the manifest layer works independently of the import invariant) — are
+**run in CI on every push and pull request** by `scripts/regression_fixtures.py`, immediately
+before the gate. Each is applied to a throwaway copy of the repository, and the runner asserts not
+only that the pipeline exits nonzero but that the layer responsible is the one that failed — a
+fixture that broke for an unrelated reason does not count as passing. It also validates its own
+roster before starting, so a truncated or emptied fixture list fails instead of reporting success
+over nothing. The working tree is never written to, and the runner hashes every file under it
+except `.git/`, `.lake/` and `__pycache__/` before and after to prove it. `reports/PROOF.md`,
+"Required regression tests", lists all 7 runs with the exit status of every stage.
+
+The numbers and transcripts quoted in this file, in `reports/PROOF.md` and in
+`reports/TOOLCHAIN.md` are themselves checked in CI by `scripts/check_doc_claims.py`, which
+compares them against what the commands print. The rest of the prose in those documents — the
+mathematics, the section references, the arguments — is maintained by hand and is not
+machine-checked; `reports/PROOF.md`'s "Trust boundary" draws that line explicitly.
 
 `reports/PROOF.md` states what the three lemmas prove and — the part that matters most for anyone
 citing this repository — what they do **not**: there is no correspondence proof between this Lean
