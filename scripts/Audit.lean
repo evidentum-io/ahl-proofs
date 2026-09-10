@@ -194,7 +194,7 @@ def declaredInThisFile (env : Environment) (name : Name) : Bool :=
   IO.println s!"Classical.choice used by: {choiceUsers}"
   IO.println s!"axiom(s) outside the allowed set {allowedAxioms}: \
 {if outsideAllowed.isEmpty then "(none)" else toString outsideAllowed}"
-  IO.println s!"axiom(s) declared by this audit file itself: \
+  IO.println s!"axiom(s) declared by this audit file ahead of this check: \
 {if auditOwnAxioms.isEmpty then "(none)" else toString auditOwnAxioms}"
 
   let mut problems : Array String := #[]

@@ -21,8 +21,10 @@ document" below. The four:
   `Lean.collectAxioms`. This is the check that establishes what the proofs actually depend on.
   Everything in "Axiom audit" below is its output.
 * **The policy over source text** — `scripts/check_source_policy.py`. It rejects four lexemes in
-  every `.lean` file in the working tree: Lean's two placeholder proof terms, `warningAsError`
-  set to false, and `debug.skipKernelTC`. It decides nothing about meaning. It forbids spellings
+  every `.lean` file the coverage layer admits — `.git/`, `.lake/` and `__pycache__/` are skipped
+  here and *refused* there, so a Lean file this scan does not reach fails the gate one layer
+  earlier — namely: Lean's two placeholder proof terms, `warningAsError` set to false, and
+  `debug.skipKernelTC`. It decides nothing about meaning. It forbids spellings
   that have no legitimate use in this repository, each of which is a way to leave the environment
   audit with nothing to find — a placeholder inside an `example` never becomes a constant, and a
   declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
@@ -38,7 +40,7 @@ document" below. The four:
 * **Artifact coverage and the import invariant** — `scripts/check_imports.py`. Two rules, the
   second because the first was not enough. Every file in the working tree whose suffix is one this
   repository covers — `.lean`, `.py`, `.sh`, `.yml`, `.yaml` — must fall into a **declared**
-  category and must be hashed by `reports/PROOF.sha256`:
+  category and must fall inside the file list `scripts/gen_proof_sha256.py` enumerates:
 
   | Suffix | Declared category |
   |---|---|
@@ -59,8 +61,13 @@ document" below. The four:
 
   And every library module must be reachable by imports from the root module, so that what was
   built — and therefore what the environment audit can see — is everything that is there.
-  "Hashed" is not restated here: the rule asks `scripts/gen_proof_sha256.py` for its own file
-  list, so classification and hashing cannot drift into meaning different sets.
+
+  **That is membership in a list, not a statement about `reports/PROOF.sha256`.** The rule asks
+  `scripts/gen_proof_sha256.py` which files it enumerates, so classification and the manifest's own
+  walk cannot drift into meaning different sets; it does not read the recorded manifest. Whether
+  the recorded manifest matches that walk is `gen_proof_sha256.py --check`, a separate step —
+  delete a line from `reports/PROOF.sha256` and this layer stays green while that step fails,
+  which is precisely what regression fixture 6b pins.
 
   **Why those five suffixes and no others.** Something outside the list can only run if the build
   or a CI step invokes it. The build is Lake, which reads `lakefile.toml` (a mandatory manifest
@@ -640,7 +647,7 @@ all 38 fixture run(s) covering 19 failure mode(s) behaved as declared: each brok
 | 10c | `__pycache__/Bad.lean` | Lean-file coverage | Python bytecode caches. Same reasoning, and the directory this was first demonstrated in. |
 | 12a | `tools/helper.py` | covered-artifact coverage | The class again, one file type over. The `.lean` rule said nothing about `.py`, so a Python file outside `scripts/` was hashed by nothing and classified by nobody; a workflow step invoking it would have run unhashed content, and the command-set comparison would have noticed the new *call* while saying nothing about the *callee* being outside the manifest. |
 | 12b | `tools/helper.sh` | covered-artifact coverage | Same, for shell. Both categories now require the file to live under `scripts/` **and** to be present in `reports/PROOF.sha256`, with the manifest asked for its own file list rather than the rule restating it. |
-| 12c | `.github/workflows/extra.yml` | covered-artifact coverage | The sharpest of the three: GitHub Actions runs every file under `.github/workflows/` on its own schedule and permissions, with no step of this repository referring to it. So YAML is declared file by file, not admitted by directory, and each declared file must also be hashed. |
+| 12c | `.github/workflows/extra.yml` | covered-artifact coverage | The sharpest of the three: GitHub Actions runs every file under `.github/workflows/` on its own schedule and permissions, with no step of this repository referring to it. So YAML is declared file by file, not admitted by directory, and each declared file must also be in the manifest's file list. |
 | 15a | `if: false` on the regression-fixtures step | document claims | The worst hole found in twelve rounds: with the manifest regenerated as any author would, CI went green having never run a fixture. The label check saw the step in place, the command comparison saw the same commands, and that the step would not run was visible to nothing. The step schema now admits `name` plus exactly one of `run` or a SHA-pinned `uses`, and refuses everything else. |
 | 15b | `continue-on-error: true` on the proof gate | document claims | The same, one field over: the gate would run, fail, and not fail the job. |
 | 15c | `shell: bash` on a step | document claims | Harmless in itself, and refused anyway — the schema does not enumerate the dangerous fields, it admits only the two this workflow uses, so a field GitHub adds tomorrow is refused before anyone has to think about what it means. |
@@ -762,7 +769,7 @@ The whole gate, verbatim, on the tree this document describes — exit status 0:
 ```
 $ ./scripts/check_axioms.sh
 == layer 1/3: scripts/check_imports.py (artifact coverage & import invariant) ==
-every covered artifact accounted for: 9 library module(s) under AhlProofs/, all reachable from AhlProofs.lean (10 module(s) in the closure); 1 declared auxiliary .lean; 7 tooling file(s) under scripts/; 1 declared CI configuration file(s); 0 unclassified, all hashed
+every covered artifact accounted for: 9 library module(s) under AhlProofs/, all reachable from AhlProofs.lean (10 module(s) in the closure); 1 declared auxiliary .lean; 7 tooling file(s) under scripts/; 1 declared CI configuration file(s); 0 unclassified, all inside the manifest's file list (that the recorded manifest matches it is checked separately, by gen_proof_sha256.py --check)
 
 == layer 2/3: scripts/check_source_policy.py (policy over source text) ==
 source policy holds: 11 .lean file(s) scanned, none contains `sorry`, `admit`, `warningAsError false`, `debug.skipKernelTC`
@@ -773,7 +780,7 @@ own axiom declarations: (none)
 sorryAx present in the closure of: (none)
 Classical.choice used by: #[AhlProofs.commit_plain_descriptor_collision]
 axiom(s) outside the allowed set [propext, Classical.choice, Quot.sound]: (none)
-axiom(s) declared by this audit file itself: (none)
+axiom(s) declared by this audit file ahead of this check: (none)
 extra axioms: (none) PASS
 ```
 

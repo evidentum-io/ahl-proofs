@@ -72,11 +72,14 @@ The gate is `./scripts/check_axioms.sh`, three layers in order:
 
 1. **Artifact coverage and the import invariant** (`scripts/check_imports.py`) — every `.lean`,
    `.py`, `.sh`, `.yml` and `.yaml` file in the working tree must belong to a declared category
-   and be hashed by the manifest, and every library module must be reachable by imports from
-   `AhlProofs.lean`. A module nobody imports is never compiled, so it is never audited either, and
-   both `lake build` and the audit exit 0 while ignoring it entirely.
+   and fall inside the file list the manifest generator enumerates, and every library module must
+   be reachable by imports from `AhlProofs.lean`. A module nobody imports is never compiled, so it
+   is never audited either, and both `lake build` and the audit exit 0 while ignoring it entirely.
+   Whether the *recorded* `reports/PROOF.sha256` matches that file list is a separate step of the
+   pipeline, not this layer.
 2. **The policy over source text** (`scripts/check_source_policy.py`) — a short declared list of
-   lexemes is rejected in every `.lean` file, with no allowlist of files or places. Which lexemes
+   lexemes is rejected in every `.lean` file the layer above admits — the same three directories
+   are skipped here and refused there — with no allowlist of files or places. Which lexemes
    is not written out here; the gate prints them, and that output is published and checked in
    `reports/PROOF.md`. It decides nothing about meaning;
    it forbids the spellings that would leave the next layer with nothing to find, such as a
@@ -114,14 +117,16 @@ The working tree is never written to, and the runner hashes every file under it 
 `.lake/` and `__pycache__/` before and after to prove it. `reports/PROOF.md`, "Required regression
 tests", lists every run with the exit status of every stage.
 
-The numbers and the published transcripts in this file, in `reports/PROOF.md` and in
-`reports/TOOLCHAIN.md` are themselves checked in CI by `scripts/check_doc_claims.py`, which also
-holds `.github/workflows/ci.yml` to a strict schema at the workflow, job and step level — so
-neither a step nor the whole job can be disabled with `if: false`, and the checkout action cannot
-be swapped for another repository. **Exactly what it checks is enumerated under "What is checked
-about this document" in `reports/PROOF.md`** and is deliberately not restated here: a second copy
-of that list is a copy that drifts, which is how three separate claims in these documents went
-stale before the rule of keeping each in one place was adopted.
+A **defined list** of numbers and published transcripts in this file, in `reports/PROOF.md` and in
+`reports/TOOLCHAIN.md` is checked in CI by `scripts/check_doc_claims.py`, which also holds
+`.github/workflows/ci.yml` to a strict schema at the workflow, job and step level — so neither a
+step nor the whole job can be disabled with `if: false`, and the checkout action cannot be swapped
+for another repository. **That list is enumerated under "What is checked about this document" in
+`reports/PROOF.md`**, and it is a list, not a category: plenty of numbers in these documents are
+outside it — build timings, the recorded host triple, I-D and RFC section numbers — and are
+maintained by hand. The enumeration is deliberately not restated here: a second copy of a list is
+a copy that drifts, which is how three separate claims in these documents went stale before the
+rule of keeping each in one place was adopted.
 
 **The order and identity of the workflow's steps are machine-checked against the published install
 script's labels; what each step actually runs is not, and is maintained by hand.**

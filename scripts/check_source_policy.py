@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Source policy: a small set of lexemes that have no legitimate use in this repository is
-rejected outright, everywhere in every `.lean` file in the working tree.
+rejected outright, in every `.lean` file this repository admits — which is every one the coverage
+layer classifies, since a Lean file under `.git/`, `.lake/` or `__pycache__/` is refused there
+before this scan is reached.
 
 **This is a policy over source text, not a semantic check.** The semantic check is
 `scripts/Audit.lean`, which walks the compiled `Lean.Environment` and computes real axiom
@@ -39,8 +41,11 @@ two proven blind spots of the audit this repository already retired. A parser th
 confused is worse here than prose that has to be phrased around a word.
 
 Discovery is a filesystem walk, not `git ls-files`: every `*.lean` in the working tree outside
-`.git/` and the `.lake/` build directory is scanned, which is a superset of the tracked files and
-does not depend on whether a new file has been `git add`ed yet.
+`.git/`, `.lake/` and `__pycache__/` is scanned, which is a superset of the tracked files and does
+not depend on whether a new file has been `git add`ed yet. Those three exclusions are shared with
+`scripts/check_imports.py` (they are its `EXCLUDED_DIRS`, imported rather than repeated), and they
+are not a way past this policy: that layer **refuses** a Lean file under any of them outright, so
+a `.lean` this scan skips fails the gate one layer earlier.
 
 Usage:
     check_source_policy.py [--root DIR]    # exit 0 if no forbidden lexeme occurs, 1 otherwise

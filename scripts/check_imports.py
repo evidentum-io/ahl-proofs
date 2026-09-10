@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 """Artifact coverage: every file in this repository whose suffix it covers — `.lean`, `.py`,
-`.sh`, `.yml`, `.yaml` — belongs to a declared category and is hashed by the manifest, and every
-library module is reachable by imports from the root module `AhlProofs.lean`.
+`.sh`, `.yml`, `.yaml` — belongs to a declared category and falls inside the file list
+`scripts/gen_proof_sha256.py` enumerates, and every library module is reachable by imports from
+the root module `AhlProofs.lean`.
+
+**What "inside the file list" is and is not.** This asks the manifest generator which files it
+covers and requires every classified artifact to be among them. It does **not** read
+`reports/PROOF.sha256` and does not establish that the recorded manifest matches anything —
+`python3 scripts/gen_proof_sha256.py --check` is that check, and it is a separate step of the
+pipeline for a reason: deleting a line from the recorded manifest leaves this layer green and is
+caught there (regression fixture 6b turns on exactly that division). An earlier version of this
+file printed "all hashed", which read as the stronger claim and was not earned.
 
 Two rules, and the first one exists because the second was not enough. See `DECLARED_AUXILIARY`
 below for why the coverage rule is stated as "everything must be classified" rather than as one
@@ -146,10 +155,10 @@ DECLARED_BUILD_FILES = ("lean-toolchain", "lakefile.toml", "lake-manifest.json")
 # declared categories —
 #
 #   * a **library module**: `AhlProofs.lean` or a file under `AhlProofs/`. It must be reachable by
-#     imports from the root module, which makes it built, hashed by the manifest and walked by the
-#     environment audit.
+#     imports from the root module, which makes it built, covered by the manifest's walk, and seen
+#     by the environment audit.
 #   * a **declared auxiliary file**: named below. Auxiliary files are not part of the library and
-#     are never elaborated, so an `axiom` in one is inert; they are covered by the hash manifest
+#     are never elaborated, so an `axiom` in one is inert; they are covered by the manifest's walk
 #     and by the source policy, and by nothing else, which is precisely why each has to be named
 #     rather than admitted by directory.
 #
@@ -328,12 +337,14 @@ def main() -> int:
             continue
         covered[lowered].append(q)
 
-    # Everything the hash manifest covers, asked of the manifest itself rather than restated here,
-    # so "classified" and "hashed" cannot drift into meaning different sets.
+    # The file list the manifest generator enumerates, asked of the generator itself rather than
+    # restated here, so "classified" and "covered by the manifest" cannot drift into meaning
+    # different sets. This is the generator's *computed* list; the recorded reports/PROOF.sha256
+    # is compared against it by `gen_proof_sha256.py --check`, not here.
     try:
         manifest_rels = {str(q.relative_to(root)) for q in manifest_discover(root)}
     except Degenerate as e:
-        problems.append(f"the hash manifest cannot enumerate its own files: {e}")
+        problems.append(f"the manifest generator cannot enumerate its own files: {e}")
         manifest_rels = set()
 
     scripts_seen = {s: [] for s in SCRIPT_SUFFIXES}
@@ -351,9 +362,9 @@ def main() -> int:
             scripts_seen[suffix].append(rel)
             if rel not in manifest_rels:
                 problems.append(
-                    f"{rel} is under {SCRIPT_DIR}/ but is not covered by reports/PROOF.sha256. "
-                    "Classification and hashing must agree; regenerate the manifest, or find out "
-                    "why the manifest's own walk does not reach this file."
+                    f"{rel} is under {SCRIPT_DIR}/ but is not in the file list "
+                    "scripts/gen_proof_sha256.py enumerates. Classification and the manifest's "
+                    "own walk must agree; find out why that walk does not reach this file."
                 )
     for suffix, seen in sorted(scripts_seen.items()):
         if not seen:
@@ -382,7 +393,7 @@ def main() -> int:
             problems.append(f"{rel} is declared as a build/pin file but does not exist")
         elif rel not in manifest_rels:
             problems.append(
-                f"{rel} is a declared build/pin file but is not covered by reports/PROOF.sha256"
+                f"{rel} is a declared build/pin file but is not in the manifest's file list"
             )
 
     declared_yaml = set(DECLARED_YAML)
@@ -395,8 +406,8 @@ def main() -> int:
             )
         elif rel not in manifest_rels:
             problems.append(
-                f"{rel} is a declared CI configuration file but is not covered by "
-                "reports/PROOF.sha256 — GitHub executes it, so its bytes must be hashed"
+                f"{rel} is a declared CI configuration file but is not in the manifest's file "
+                "list — GitHub executes it, so it must be a file the manifest hashes"
             )
     for suffix in sorted(YAML_SUFFIXES):
         for q in covered[suffix]:
@@ -442,7 +453,8 @@ def main() -> int:
             print(f"  - {p}", file=sys.stderr)
         print(
             f"\nEvery {', '.join(sorted(COVERED_SUFFIXES))} file in this repository must belong "
-            "to a declared category and be hashed: a library module under "
+            "to a declared category and fall inside the manifest's file list: a library module "
+            "under "
             f"{LIBRARY_DIR}/ reachable by imports from {ROOT_FILE}, a declared auxiliary .lean, "
             f"tooling under {SCRIPT_DIR}/, or a declared CI configuration file. There is no other "
             "place for one to sit.",
@@ -455,7 +467,9 @@ def main() -> int:
         f"{LIBRARY_DIR}/, all reachable from {ROOT_FILE} ({len(reachable)} module(s) in the "
         f"closure); {len(declared_aux)} declared auxiliary .lean; "
         f"{sum(len(v) for v in scripts_seen.values())} tooling file(s) under {SCRIPT_DIR}/; "
-        f"{len(declared_yaml)} declared CI configuration file(s); 0 unclassified, all hashed"
+        f"{len(declared_yaml)} declared CI configuration file(s); 0 unclassified, all inside "
+        f"the manifest's file list (that the recorded manifest matches it is checked separately, "
+        f"by gen_proof_sha256.py --check)"
     )
     return 0
 
