@@ -70,46 +70,33 @@ attestation.
 
 The gate is `./scripts/check_axioms.sh`, three layers in order:
 
-1. **Artifact coverage and the import invariant** (`scripts/check_imports.py`) — every file in the
-   tree whose suffix this repository covers (`.lean`, `.py`, `.sh`, `.yml`, `.yaml`) must belong
-   to a declared category *and* be hashed by the manifest: a library module (`AhlProofs.lean` or a
-   file under `AhlProofs/`, which must in turn be reachable by imports from the root module), a
-   file named in that script's `DECLARED_AUXILIARY`, tooling under `scripts/`, or a CI
-   configuration file named in `DECLARED_YAML` — the last declared one by one because GitHub
-   Actions runs every file under `.github/workflows/` whether or not anything here refers to it. A library module nobody imports is never
-   compiled, so it is never audited either, and both `lake build` and the audit exit 0 while
-   ignoring it entirely; a `.lean` outside both categories — in the repository root, say — was
-   invisible to every check there was. The rule enumerates categories rather than directories, so
-   there is no next directory to forget, and a `.lean` under `.git/`, `.lake/` or `__pycache__/`
-   is refused outright rather than skipped. The guarantee covers regular files named exactly
-   `.lean`; case variants and directory symlinks are refused, and Lean content under some other
-   name is outside it — see "Trust boundary" in `reports/PROOF.md`.
-2. **The policy over source text** (`scripts/check_source_policy.py`) — four lexemes are rejected
-   in every `.lean` file in the working tree, with no allowlist of files or places. This is a
-   policy over sources, deliberately not a semantic check: it decides nothing about meaning, and
-   exists because each of those spellings is a way to leave the next layer with nothing to find —
-   a placeholder proof inside an `example` never becomes a constant in the environment, and a
-   declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
-   because nothing was checked.
+1. **Artifact coverage and the import invariant** (`scripts/check_imports.py`) — every `.lean`,
+   `.py`, `.sh`, `.yml` and `.yaml` file in the working tree must belong to a declared category
+   and be hashed by the manifest, and every library module must be reachable by imports from
+   `AhlProofs.lean`. A module nobody imports is never compiled, so it is never audited either, and
+   both `lake build` and the audit exit 0 while ignoring it entirely.
+2. **The policy over source text** (`scripts/check_source_policy.py`) — a short declared list of
+   lexemes is rejected in every `.lean` file, with no allowlist of files or places. Which lexemes
+   is not written out here; the gate prints them, and that output is published and checked in
+   `reports/PROOF.md`. It decides nothing about meaning;
+   it forbids the spellings that would leave the next layer with nothing to find, such as a
+   placeholder proof inside an `example`, which never becomes a constant in the environment.
 3. **The environment audit** (`scripts/Audit.lean`) — the semantic layer, and the one that
-   establishes what the proofs depend on. It does not discover its targets by parsing source
-   text. An earlier version did (`scripts/list_theorems.py` feeding
-   `scripts/check_axiom_output.py`, by regex over the `.lean` files), and that approach had two
-   proven blind spots: a visibility modifier before the keyword `axiom` (`private axiom foo :
-   False` was invisible to a regex anchored on the bare keyword), and a string literal containing
-   the two characters `/-` confusing the comment-stripper into deleting whatever declaration
-   followed. `scripts/Audit.lean` instead `import AhlProofs`s the already-built library and walks
-   the compiled `Lean.Environment` directly — every constant whose home module is under
-   `AhlProofs.*` (currently 645; not only the 102 named `theorem`/`lemma` declarations
-   `scripts/list_theorems.py` still counts, purely for the prose numbers in this document, with
-   no role in the audit any more) — checking, via `Lean.collectAxioms`, that none is our own
-   `axiom`, that none has an axiom outside `{propext, Classical.choice, Quot.sound}` in its
-   transitive closure (which is also how an unfinished proof is caught: it elaborates to the
-   axiom `sorryAx`, so no text search for the word is needed), and that the set of constants
-   whose closure contains `Classical.choice` is *exactly*
-   `{commit_plain_descriptor_collision}` — the claim `ahl/docs-md/priority-zero.md` makes,
-   checked here against every constant on every run, at a finer grain than the 102 named
-   theorems, and it still holds exactly.
+   establishes what the proofs depend on. It imports the already-built library and walks the
+   compiled `Lean.Environment` rather than parsing source text: every constant whose home module
+   is under `AhlProofs.*` (currently 645; not only the 102 named `theorem`/`lemma` declarations
+   `scripts/list_theorems.py` counts for the prose numbers in this file), checked via
+   `Lean.collectAxioms` for our own `axiom`s, for any axiom outside
+   `{propext, Classical.choice, Quot.sound}` in its transitive closure — which is how an unfinished
+   proof is caught, since it elaborates to the axiom `sorryAx` — and for the claim
+   `ahl/docs-md/priority-zero.md` makes, that the constants whose closure contains
+   `Classical.choice` are exactly `{commit_plain_descriptor_collision}` — checked against every
+   constant on every run, at a finer grain than the 102 named theorems, and it still holds
+   exactly.
+
+That is a summary and not the account. What each layer does *not* establish, why the audit walks
+the environment instead of the sources, and the boundary of the whole construction are stated once
+under **"Trust boundary"** in `reports/PROOF.md`.
 
 **38 fixture runs covering 19 failure modes** are **run in CI on every push and pull request** by
 `scripts/regression_fixtures.py`, immediately before the gate. They are not listed here: the
@@ -125,19 +112,16 @@ stopped propagating an exit status is caught too. It also validates its own rost
 starting, so a truncated or emptied fixture list fails instead of reporting success over nothing.
 The working tree is never written to, and the runner hashes every file under it except `.git/`,
 `.lake/` and `__pycache__/` before and after to prove it. `reports/PROOF.md`, "Required regression
-tests", lists all 38 runs with the exit status of every stage.
+tests", lists every run with the exit status of every stage.
 
-A defined list of claims in this file, in `reports/PROOF.md` and in `reports/TOOLCHAIN.md` is
-itself checked in CI by `scripts/check_doc_claims.py`: four published transcripts, the counts, the
-toolchain pin and all four release-archive digests, the fixture roster, and the install script
-`reports/TOOLCHAIN.md` publishes. Of that script it checks that there is exactly one copy and that
-it parses (`sh -n`); that its `# CI step N [key].` labels cover the workflow's steps once each, in
-order, with each key occurring in that step's name; and that its platform-selection block — parsed,
-never executed — picks each recorded platform's archive and digest and refuses an unrecorded
-platform. It also holds the workflow itself to a strict schema at all three levels: admitted keys
-only, plus the declared runner image, the declared job environment, the exact `uses:` action, and
-triggers with no branch filter — so neither a step nor the whole job can be disabled with
-`if: false`, and the checkout action cannot be swapped for another repository.
+The numbers and the published transcripts in this file, in `reports/PROOF.md` and in
+`reports/TOOLCHAIN.md` are themselves checked in CI by `scripts/check_doc_claims.py`, which also
+holds `.github/workflows/ci.yml` to a strict schema at the workflow, job and step level — so
+neither a step nor the whole job can be disabled with `if: false`, and the checkout action cannot
+be swapped for another repository. **Exactly what it checks is enumerated under "What is checked
+about this document" in `reports/PROOF.md`** and is deliberately not restated here: a second copy
+of that list is a copy that drifts, which is how three separate claims in these documents went
+stale before the rule of keeping each in one place was adopted.
 
 **The order and identity of the workflow's steps are machine-checked against the published install
 script's labels; what each step actually runs is not, and is maintained by hand.**

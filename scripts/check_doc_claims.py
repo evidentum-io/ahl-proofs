@@ -1184,7 +1184,12 @@ def main() -> int:
          (constants, str(theorems)), "constant and theorem counts"),
         ("README.md", r"at a finer grain than the (\d+) named\s+theorems",
          (str(theorems),), "theorem count"),
-        ("README.md", r"(\d+) fixture runs covering (\d+) failure modes",
+        # Patterns spanning more than a few words are whitespace-tolerant: Markdown wraps
+        # paragraphs, and a pattern matching only the unwrapped form silently stops covering the
+        # wrapped one. That is how "38 fixture runs covering 19 failure modes" acquired a second,
+        # unchecked copy in reports/PROOF.md — the checker found the one-line occurrence, was
+        # satisfied, and never looked at the wrapped one.
+        ("README.md", r"(\d+)\s+fixture\s+runs\s+covering\s+(\d+)\s+failure\s+modes",
          (str(runs), str(modes)), "fixture run and failure-mode counts"),
         ("reports/PROOF.md",
          r"currently (\d+) constants, against the (\d+) named `theorem`/`lemma`",
@@ -1195,9 +1200,9 @@ def main() -> int:
          "theorem count and the number of files they live in"),
         ("reports/PROOF.md", r"against all (\d+)\s+constants under", (constants,),
          "constant count"),
-        ("reports/PROOF.md", r"(\d+) fixture runs covering (\d+) failure modes",
+        ("reports/PROOF.md", r"(\d+)\s+fixture\s+runs\s+covering\s+(\d+)\s+failure\s+modes",
          (str(runs), str(modes)), "fixture run and failure-mode counts"),
-        ("reports/TOOLCHAIN.md", r"(\d+) fixture runs covering (\d+) failure modes",
+        ("reports/TOOLCHAIN.md", r"(\d+)\s+fixture\s+runs\s+covering\s+(\d+)\s+failure\s+modes",
          (str(runs), str(modes)), "fixture run and failure-mode counts"),
         ("reports/PROOF.md", r"is current \((\d+) file\(s\)\)", (str(manifest_files),),
          "the number of files in the hash manifest"),

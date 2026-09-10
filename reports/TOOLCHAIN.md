@@ -40,17 +40,19 @@ the same pinned release URL and the same recorded digests as the `lean` job of
 order. Pasted line by line the script would print the same output and stop at nothing, which is
 why it is a file and why every guard is `exit 1` rather than a printed warning.
 
-**What is checked, and what is not.** `scripts/check_doc_claims.py` checks that this script is
-published once, that it parses (`sh -n`), that its `# CI step N [key]` labels cover the workflow's
-steps exactly once each in order with each key occurring in that step's name, and that its
-platform-selection block offers exactly the recorded archives and digests. **The order and identity of the workflow's steps are machine-checked against the published install
-script's labels; what each step actually runs is not, and is maintained by hand.**
-A comparison of command sets did that until it produced two defects of its own and was removed;
-replacing
-`python3 scripts/regression_fixtures.py` here with `:` would pass every check listed above. Which
-commands each block runs is maintained by hand and rests on review of the diff. The exhaustive
-list of what is machine-checked about these documents is in `reports/PROOF.md`, "What is checked
-about this document".
+**What is checked, and what is not.** `scripts/check_doc_claims.py` checks several things about
+this script — that it is published once, that it parses, that its labels line up with the
+workflow's steps, that its platform table is the recorded one — and the exhaustive list of them is
+in `reports/PROOF.md`, "What is checked about this document". It is not repeated here, because a
+second copy of a list is a copy that drifts. What must be said here, next to the script itself,
+is the boundary:
+
+**The order and identity of the workflow's steps are machine-checked against the published
+install script's labels; what each step actually runs is not, and is maintained by hand.**
+
+A comparison of command sets did that until it produced two defects of its own and was removed.
+Concretely: replacing `python3 scripts/regression_fixtures.py` below with `:` would pass every
+check there is. Which commands each block runs rests on review of the diff.
 
 Five earlier versions of this section each got something wrong, which is why the point is
 laboured here: the first piped an installer from a mutable branch with no comparison at all; the

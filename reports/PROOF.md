@@ -515,16 +515,14 @@ a library that just finished building — the two conditions cannot both hold.
 
 ### Required regression tests
 
-**38 fixture runs covering 19 failure modes** — nineteen ways for this pipeline to be wrong;
-several modes take more than one run because the same mistake has more than one spelling. Mode 6
-is exercised twice with a different set of layers active (6 and 6b), mode 7 once per forbidden
-lexeme (7a–7d), because a policy rule that no fixture exercises can be deleted without turning
-anything red, mode 9 once per place a Lean file has actually turned up unclassified (9a–9c), mode
-10 once per directory that classification excludes (10a–10c), mode 12 once per kind of executable
-artifact that is not Lean (12a–12c), mode 15 once per step field that changes whether a step runs
-(15a–15c), mode 16 once per way of changing the job or the workflow above the step level
-(16a–16d), mode 19 once per form of malformed YAML the reader claims to refuse (19a–19c), and
-mode 20 once per document that must carry the canonical scope sentence (20a–20c). Each run must make the pipeline exit nonzero **and must be caught by the layer
+**38 fixture runs covering 19 failure modes** — nineteen ways for this pipeline to be wrong. Some
+modes take more than one run, because the same mistake has more than one spelling and a rule that
+no fixture exercises can be deleted without turning anything red: where that applies, there is one
+run per lexeme, per excluded directory, per artifact kind, per field, per document. **Which modes
+those are is not listed here.** The runs are declared in `scripts/regression_fixtures.py` and
+named one by one in the table below, and that table is checked against the declared roster on
+every run; a sentence enumerating them would be a second copy, kept by hand, of something already
+written down twice. Each run must make the pipeline exit nonzero **and must be caught by the layer
 responsible for it** — a fixture that failed for some unrelated reason would satisfy "exits
 nonzero" and prove nothing.
 
