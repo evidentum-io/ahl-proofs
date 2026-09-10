@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Import invariant: every `AhlProofs/**/*.lean` file in the working tree must be reachable, by
-imports, from the library root module `AhlProofs.lean`.
+"""Lean-file coverage: every `.lean` in this repository belongs to a declared category, and every
+library module is reachable by imports from the root module `AhlProofs.lean`.
+
+Two rules, and the first one exists because the second was not enough. See `DECLARED_AUXILIARY`
+below for why the coverage rule is stated as "everything must be classified" rather than as one
+more directory to walk.
 
 **Why this exists.** `scripts/Audit.lean` audits the compiled `Lean.Environment` produced by
 `import AhlProofs`, which is exactly the right thing to audit — but it can only see what was
@@ -39,6 +43,31 @@ import sys
 LIBRARY_DIR = "AhlProofs"
 ROOT_MODULE = "AhlProofs"
 ROOT_FILE = "AhlProofs.lean"
+EXCLUDED_DIRS = {".git", ".lake", "__pycache__"}
+
+# Every `.lean` file in this repository that is **not** part of the proof library, declared one by
+# one. Nothing else may exist.
+#
+# This list closes a class rather than a case. Three times now a file has turned out to sit
+# somewhere no check looked: under `AhlProofs/` but imported by nobody; under `scripts/` in a
+# subdirectory a non-recursive glob missed; and finally in the repository root, where an
+# `axiom planted_at_root : False` passed the manifest, the import invariant, the source policy,
+# `lake build` and the whole gate, because every one of them walked a *chosen* directory. Widening
+# the walk by one directory each time is how a fourth place stays available. So the rule is
+# inverted here: every `.lean` anywhere in the working tree must fall into one of exactly two
+# declared categories —
+#
+#   * a **library module**: `AhlProofs.lean` or a file under `AhlProofs/`. It must be reachable by
+#     imports from the root module, which makes it built, hashed by the manifest and walked by the
+#     environment audit.
+#   * a **declared auxiliary file**: named below. Auxiliary files are not part of the library and
+#     are never elaborated, so an `axiom` in one is inert; they are covered by the hash manifest
+#     and by the source policy, and by nothing else, which is precisely why each has to be named
+#     rather than admitted by directory.
+#
+# Anything else fails, with its path and what to do about it. A new auxiliary file is a one-line
+# change here, made deliberately, instead of a silently uncovered file.
+DECLARED_AUXILIARY = ("scripts/Audit.lean",)
 
 # `import Foo.Bar`, tolerating the modifiers Lean 4 allows in front of, and inside, an import
 # line (`public import`, `import all Foo`). A line that begins with the keyword `import` but does
@@ -158,6 +187,34 @@ def main() -> int:
                 if imp not in reachable:
                     queue.append(imp)
 
+    # ---- the coverage rule: every .lean in the tree belongs to a declared category ------------
+    declared_aux = set(DECLARED_AUXILIARY)
+    for rel in sorted(declared_aux):
+        if not (root / rel).is_file():
+            problems.append(
+                f"{rel} is declared as an auxiliary Lean file but does not exist — a declaration "
+                "that names nothing is how this list stops meaning anything"
+            )
+    every_lean = [
+        q for q in sorted(root.rglob("*.lean"))
+        if q.is_file() and not (EXCLUDED_DIRS & set(q.relative_to(root).parts))
+    ]
+    library_rels = {str(q.relative_to(root)) for q in found.values()} | {ROOT_FILE}
+    unclassified = [
+        str(q.relative_to(root)) for q in every_lean
+        if str(q.relative_to(root)) not in library_rels
+        and str(q.relative_to(root)) not in declared_aux
+    ]
+    for rel in unclassified:
+        problems.append(
+            f"{rel} is a Lean file that belongs to no declared category. Every .lean in this "
+            f"repository must be either a library module ({ROOT_FILE} or a file under "
+            f"{LIBRARY_DIR}/, reachable by imports, hence built, hashed and audited) or a "
+            "declared auxiliary file listed in DECLARED_AUXILIARY in this script. As it stands "
+            "nothing builds, hashes or audits this file: move it under "
+            f"{LIBRARY_DIR}/ and import it, or declare it."
+        )
+
     unreachable = sorted(set(found) - reachable)
     for mod in unreachable:
         problems.append(
@@ -167,20 +224,23 @@ def main() -> int:
         )
 
     if problems:
-        print("check_imports.py: FAIL — the import invariant does not hold", file=sys.stderr)
+        print("check_imports.py: FAIL — some Lean file is not covered as it must be",
+              file=sys.stderr)
         for p in problems:
             print(f"  - {p}", file=sys.stderr)
         print(
-            "\nEvery .lean file under AhlProofs/ must be reachable by imports from "
-            f"{ROOT_FILE}; otherwise `lake build` and the axiom audit both pass while ignoring "
-            "it entirely.",
+            "\nEvery .lean file in this repository must be either a library module under "
+            f"{LIBRARY_DIR}/ reachable by imports from {ROOT_FILE} — otherwise `lake build` and "
+            "the axiom audit both pass while ignoring it entirely — or a file named in "
+            "DECLARED_AUXILIARY. There is no third place for one to sit.",
             file=sys.stderr,
         )
         return 1
 
     print(
-        f"import invariant holds: {len(found)} file(s) under {LIBRARY_DIR}/, all reachable "
-        f"from {ROOT_FILE} ({len(reachable)} module(s) in the transitive closure)"
+        f"every .lean accounted for: {len(found)} library module(s) under {LIBRARY_DIR}/, all "
+        f"reachable from {ROOT_FILE} ({len(reachable)} module(s) in the closure); "
+        f"{len(declared_aux)} declared auxiliary file(s); 0 unclassified"
     )
     return 0
 

@@ -180,7 +180,22 @@ def fixture_8(root: pathlib.Path) -> None:
     nested.mkdir(parents=True, exist_ok=True)
     (nested / "helper.py").write_text("# nested audit helper\n", encoding="utf-8")
     (nested / "helper.sh").write_text("#!/bin/sh\n: nested audit helper\n", encoding="utf-8")
-    (nested / "Helper.lean").write_text("-- nested Lean helper\n", encoding="utf-8")
+
+
+def stray_lean(rel: str, body: str):
+    """A `.lean` file in a place no declared category covers.
+
+    Three of these, because the failure they exercise turned up three times in three different
+    directories: under the library but unimported, under `scripts/` where a non-recursive glob
+    missed it, and finally in the repository root, where `axiom planted_at_root : False` passed
+    every check there was. `scripts/check_imports.py` now classifies every `.lean` in the tree
+    instead of walking chosen directories, and these fixtures are what keeps that true.
+    """
+    def apply(root: pathlib.Path) -> None:
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+    return apply
 
 
 # Each entry: expected exit status per stage (None = the stage is not run), the layer under test,
@@ -304,11 +319,32 @@ FIXTURES = [
             "reports/PROOF.sha256 is stale",
             "scripts/nested/helper.py",
             "scripts/nested/helper.sh",
-            "scripts/nested/Helper.lean",
         ],
         # Nothing the gate covers is broken here: the manifest is CI's own step, as in 6b.
         "gate_reason": "",
     },
+] + [
+    {
+        "id": f"9{suffix}",
+        "mode": "9",
+        "title": f"Lean file at {rel}, outside every declared category",
+        "apply": stray_lean(rel, body),
+        "regen_manifest": False,
+        "expect": {"build": 0, "imports": 1, "policy": 0, "audit": 0, "gate": 1,
+                   "manifest": manifest},
+        "layer": "imports",
+        "reason": [rel, "belongs to no declared category"],
+        "gate_reason": GATE_IMPORTS,
+    }
+    for suffix, rel, body, manifest in [
+        # The repository root: the case that passed every check there was.
+        ("a", "Foo.lean", "axiom planted_at_root : False\n", 0),
+        # Any other directory nothing walks.
+        ("b", "docs/Notes.lean", "axiom planted_in_docs : False\n", 0),
+        # Under scripts/, where the manifest does see it (rglob, fixture 8) but nothing classifies
+        # it — so the manifest goes stale as well, and both layers are asserted.
+        ("c", "scripts/nested/Helper.lean", "-- nested Lean helper\n", 1),
+    ]
 ]
 
 # `gate` is `./scripts/check_axioms.sh` itself, run on the corrupted copy. It is not a fourth
@@ -334,8 +370,9 @@ STAGES = ["build", "imports", "policy", "audit", "gate", "manifest"]
 # more expensive: `scripts/check_doc_claims.py` compares this roster against the fixture table
 # published in reports/PROOF.md, so the same edit has to be made in three places, in one commit,
 # to go unnoticed. See "Trust boundary" in reports/PROOF.md.
-DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b", "7a", "7b", "7c", "7d", "8")
-DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8")
+DECLARED_RUNS = ("1", "2", "3", "4", "5", "6", "6b", "7a", "7b", "7c", "7d", "8",
+                 "9a", "9b", "9c")
+DECLARED_MODES = ("1", "2", "3", "4", "5", "6", "7", "8", "9")
 REQUIRED_KEYS = {
     "id", "mode", "title", "apply", "regen_manifest", "expect", "layer", "reason", "gate_reason",
 }

@@ -93,6 +93,7 @@ DECLARED_STRUCTURAL_CHECKS = (
     "the published install script is a single block and passes sh -n",
     "the published install script's CI step labels match .github/workflows/ci.yml",
     "the published install script selects the recorded archive for every recorded platform",
+    "the commands inside each labelled block match the workflow step it mirrors",
 )
 DECLARED_CLAIM_LABELS = frozenset({
     "constant and theorem counts",
@@ -119,8 +120,9 @@ class WorkflowParseError(Exception):
     """The workflow could not be read structurally. Fail closed; never guess."""
 
 
-def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[str]:
-    """The ordered `name` of every step of `job`, read structurally, without a YAML library.
+def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[dict]:
+    """Every step of `job` as `{"name": ..., "run": ...}`, read structurally, without a YAML
+    library.
 
     PyYAML is not in the standard library and this repository takes no dependencies, so this is a
     deliberately small reader for the shape `.github/workflows/ci.yml` actually has: block
@@ -128,7 +130,7 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[str]:
     scalars (`|`, `>`) whose contents are skipped by indentation. It is *not* a YAML parser and
     does not pretend to be: anything outside that shape raises `WorkflowParseError` rather than
     being silently reinterpreted. Where PyYAML happens to be installed, `parse_workflow_steps` is
-    cross-checked against it (see `workflow_step_names`), so this reader being wrong is itself
+    cross-checked against it (see `workflow_steps`), so this reader being wrong is itself
     caught on any machine that has the library — without ever requiring it.
     """
     lines = text.splitlines()
@@ -227,6 +229,7 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[str]:
         return value
 
     names: list[str] = []
+    runs: list[str] = []
     item_indent = None
     i += 1
     while i < n:
@@ -250,6 +253,7 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[str]:
                     f"line {i + 1}: step list item at indent {ind}, expected {item_indent}"
                 )
             names.append(None)                       # placeholder for this step
+            runs.append("")
             stripped = stripped[2:].strip()
             key_indent = ind + 2
         elif item_indent is not None and ind == item_indent + 2:
@@ -272,10 +276,18 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[str]:
             )
         if value in ("|", ">", "|-", ">-", "|+", ">+") or value == "":
             # A block scalar, or a nested mapping/sequence (`with:`, `env:`). Either way its
-            # contents are not this step's own fields: skip everything indented deeper.
+            # contents are not this step's own fields. A `run:` block scalar is captured (its
+            # commands are compared against the published script); anything else is skipped.
+            body: list[str] = []
             i += 1
             while i < n and (is_skippable(i) or indent_of(i) > key_indent):
+                if not is_skippable(i):
+                    body.append(lines[i][key_indent:])
                 i += 1
+            if key == "run" and value != "":
+                if not names:
+                    raise WorkflowParseError("`run:` outside any step")
+                runs[-1] = "\n".join(body)
             continue
         if key == "name":
             if not names:
@@ -283,6 +295,10 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[str]:
             if names[-1] is not None:
                 raise WorkflowParseError(f"line {i + 1}: step has more than one `name:`")
             names[-1] = check_step_name(value, i + 1)
+        elif key == "run":
+            if not names:
+                raise WorkflowParseError(f"line {i + 1}: `run:` outside any step")
+            runs[-1] = value
         i += 1
 
     if not names:
@@ -290,27 +306,88 @@ def parse_workflow_steps(text: str, job: str = WORKFLOW_JOB) -> list[str]:
     unnamed = [k + 1 for k, v in enumerate(names) if v is None]
     if unnamed:
         raise WorkflowParseError(f"step(s) {unnamed} have no `name:`")
-    return names
+    return [{"name": nm, "run": rn} for nm, rn in zip(names, runs)]
 
 
-def workflow_step_names(root: pathlib.Path) -> list[str]:
+def workflow_steps(root: pathlib.Path) -> list[dict]:
     """`parse_workflow_steps`, cross-checked against PyYAML when it happens to be installed."""
     text = (root / WORKFLOW).read_text(encoding="utf-8")
-    names = parse_workflow_steps(text)
+    steps = parse_workflow_steps(text)
     try:
         import yaml  # noqa: PLC0415 — optional; never required
     except ImportError:
-        return names
-    reference = [s.get("name") for s in yaml.safe_load(text)["jobs"][WORKFLOW_JOB]["steps"]]
-    if reference != names:
+        return steps
+    reference = yaml.safe_load(text)["jobs"][WORKFLOW_JOB]["steps"]
+    ref_names = [s.get("name") for s in reference]
+    if ref_names != [s["name"] for s in steps]:
         raise WorkflowParseError(
-            "the dependency-free workflow reader disagrees with PyYAML:\n"
-            f"  reader: {names}\n  PyYAML: {reference}"
+            "the dependency-free workflow reader disagrees with PyYAML about step names:\n"
+            f"  reader: {[s['name'] for s in steps]}\n  PyYAML: {ref_names}"
         )
-    return names
+    ref_cmds = [commands_in(s.get("run") or "") for s in reference]
+    own_cmds = [commands_in(s["run"]) for s in steps]
+    if ref_cmds != own_cmds:
+        raise WorkflowParseError(
+            "the dependency-free workflow reader disagrees with PyYAML about step commands:\n"
+            f"  reader: {own_cmds}\n  PyYAML: {ref_cmds}"
+        )
+    return steps
 
 
 LABEL_RE = re.compile(r"^#\s*CI steps?\s+(\d+)(?:\s*-\s*(\d+))?\s*\[([^\]]*)\]\s*\.")
+
+# The vocabulary of commands compared between a workflow step and the script block that mirrors
+# it. This is **not** shell equivalence and is not offered as such: it is the set of tool
+# invocations that decide what a step actually does here, and everything outside it (`echo`,
+# `mkdir`, `mv`, `case`, variable assignments, redirections) is ignored. Comparing free shell text
+# would be either brittle or meaningless; comparing this vocabulary caught a real divergence —
+# `lake --version` present in CI's self-report step and absent from the published script — that
+# label-only comparison could not see.
+# `_CMD` requires the word to stand where a command stands — at the start of a line, or after a
+# pipe, `;`, `&&` or an opening `$(`, optionally behind `time`. Without it `tar` matches inside
+# `lean-4.31.0-linux.tar.zst` and the comparison reports a difference that is not one; without the
+# `time` allowance, CI's `time lake build` is not recognised as `lake build`.
+_CMD = r"(?:^|[|;&(])[ \t]*(?:time[ \t]+)?"
+COMMAND_PATTERNS = [
+    (re.compile(_CMD + r"python3\s+(scripts/[\w./-]+\.py)", re.M), r"python3 \1"),
+    (re.compile(_CMD + r"(?:\./)?(scripts/[\w./-]+\.sh)\b", re.M), r"./\1"),
+    (re.compile(_CMD + r"lake\s+(clean|build|env|--version)\b", re.M), r"lake \1"),
+    (re.compile(_CMD + r"lean\s+--version\b", re.M), "lean --version"),
+    (re.compile(_CMD + r"curl\b", re.M), "curl"),
+    (re.compile(_CMD + r"(?:sha256sum|shasum)\b[^\n]*?\s-c\b", re.M), "sha256 -c"),
+    (re.compile(_CMD + r"tar\b", re.M), "tar"),
+    (re.compile(_CMD + r"find\b", re.M), "find"),
+]
+
+# Anti-vacuity for the vocabulary above: these must all turn up somewhere in the workflow, or the
+# comparison is running over a vocabulary that no longer recognises this repository's own checks.
+DECLARED_COMMANDS = (
+    "python3 scripts/gen_proof_sha256.py",
+    "python3 scripts/check_imports.py",
+    "python3 scripts/check_source_policy.py",
+    "python3 scripts/regression_fixtures.py",
+    "python3 scripts/check_doc_claims.py",
+    "./scripts/check_axioms.sh",
+    "lake build",
+    "lean --version",
+)
+
+
+def commands_in(text: str) -> list[str]:
+    """The declared-vocabulary commands appearing in a chunk of shell, sorted and deduplicated.
+
+    Full-line comments are dropped first, so prose about a command is not mistaken for the
+    command. A trailing comment on a command line is not stripped — it sits beside an invocation
+    that is being counted anyway.
+    """
+    body = "\n".join(
+        line for line in text.splitlines() if not line.strip().startswith("#")
+    )
+    found = set()
+    for pattern, replacement in COMMAND_PATTERNS:
+        for m in pattern.finditer(body):
+            found.add(m.expand(replacement) if "\\" in str(replacement) else replacement)
+    return sorted(found)
 
 
 def extract_install_script(doc: str, problems: list[str]) -> str | None:
@@ -365,7 +442,7 @@ def check_install_script_syntax(script: str, problems: list[str]) -> None:
         pathlib.Path(path).unlink(missing_ok=True)
 
 
-def check_install_script_labels(script: str, ci_steps: list[str], problems: list[str]) -> None:
+def check_install_script_labels(script: str, ci_steps: list[dict], problems: list[str]) -> None:
     """The script's `# CI step N [key].` labels against the workflow's actual step sequence.
 
     Each block of the script is labelled with the CI step it corresponds to and a key that must
@@ -378,6 +455,7 @@ def check_install_script_labels(script: str, ci_steps: list[str], problems: list
     of what each step does is not machine-checked and is not claimed to be.
     """
     labels: list[tuple[int, int, list[str]]] = []
+    blocks: list[list[str]] = []
     for line in script.splitlines():
         m = LABEL_RE.match(line.strip())
         if m:
@@ -385,6 +463,9 @@ def check_install_script_labels(script: str, ci_steps: list[str], problems: list
             hi = int(m.group(2)) if m.group(2) else lo
             keys = [k.strip() for k in m.group(3).split("|")]
             labels.append((lo, hi, keys))
+            blocks.append([])
+        elif blocks:
+            blocks[-1].append(line)
 
     if not labels:
         problems.append(
@@ -416,9 +497,39 @@ def check_install_script_labels(script: str, ci_steps: list[str], problems: list
             f"      script labels cover:            {covered}"
         )
 
+    # Commands, not just labels. A label can point at the right step while the block under it
+    # runs something else — which is how `lake --version`, present in CI's self-report step, was
+    # missing from the published script without anything noticing.
+    for (lo, hi, _), body in zip(labels, blocks):
+        in_ci = sorted({
+            c for number in range(lo, hi + 1)
+            if 1 <= number <= len(ci_steps)
+            for c in commands_in(ci_steps[number - 1]["run"])
+        })
+        in_script = commands_in("\n".join(body))
+        if in_ci != in_script:
+            span = f"{lo}" if hi == lo else f"{lo}-{hi}"
+            problems.append(
+                f"reports/TOOLCHAIN.md: the commands under `CI step{'s' if hi > lo else ''} "
+                f"{span}` differ from the workflow's.\n"
+                f"      workflow runs: {in_ci}\n"
+                f"      script runs:   {in_script}\n"
+                f"      only in workflow: {sorted(set(in_ci) - set(in_script))}\n"
+                f"      only in script:   {sorted(set(in_script) - set(in_ci))}"
+            )
+
+    all_ci_commands = {c for s in ci_steps for c in commands_in(s["run"])}
+    absent = [c for c in DECLARED_COMMANDS if c not in all_ci_commands]
+    if absent:
+        problems.append(
+            f"the command vocabulary no longer recognises {absent} anywhere in {WORKFLOW} — "
+            "comparing command sets under a vocabulary that matches nothing would compare "
+            "empty sets and pass"
+        )
+
     rows, mismatched = [], False
     for number in expected:
-        name = ci_steps[number - 1]
+        name = ci_steps[number - 1]["name"]
         key = keyed.get(number)
         ok = key is not None and key.lower() in name.lower()
         mismatched = mismatched or not ok
@@ -449,19 +560,94 @@ PLATFORM_CASES = [
 CI_PLATFORM = ("Linux", "x86_64")
 
 
+class PlatformParseError(Exception):
+    """The platform-selection block is not in the one form this checker reads."""
+
+
+def parse_platform_cases(fragment: str) -> dict[tuple[str, str], tuple[str, str]]:
+    """Read `case "$(uname -s)/$(uname -m)" in … esac` structurally. Never execute it.
+
+    An earlier version of this check *ran* the fragment with a stubbed `uname`. That answered the
+    question but overstated its own safety: it executed text taken from a Markdown file, in the
+    working directory, with only `uname` shadowed — absolute paths, network calls and writes to
+    the tree were all still available to it, and there was no timeout. Since the accepted form is
+    known and small, parsing it is both stricter and free of that: anything outside the form
+    raises rather than being run to find out what it does.
+
+    Accepted, and nothing else: one `case` on `"$(uname -s)/$(uname -m)"`; branches whose patterns
+    are `System/Machine` (several separated by `|`); each non-default branch assigning exactly one
+    `ASSET` and one `DIGEST` and nothing else; and a final `*)` branch that assigns neither and
+    exits nonzero.
+    """
+    lines = [ln.rstrip() for ln in fragment.splitlines()]
+    body = [ln for ln in lines if ln.strip() and not ln.strip().startswith("#")]
+    if not body or body[0].strip() != 'case "$(uname -s)/$(uname -m)" in':
+        raise PlatformParseError(
+            "the block does not open with `case \"$(uname -s)/$(uname -m)\" in`"
+        )
+    if body[-1].strip() != "esac":
+        raise PlatformParseError("the block does not close with `esac`")
+
+    cases: dict[tuple[str, str], tuple[str, str]] = {}
+    default_seen = False
+    i, n = 1, len(body) - 1
+    while i < n:
+        head = body[i].strip()
+        if not head.endswith(")"):
+            raise PlatformParseError(f"expected a branch pattern ending in `)`, got {head!r}")
+        patterns = [pat.strip() for pat in head[:-1].split("|")]
+        i += 1
+        branch: list[str] = []
+        while i < n and body[i].strip() != ";;":
+            branch.append(body[i].strip())
+            i += 1
+        if i >= n:
+            raise PlatformParseError(f"branch {head!r} is not terminated by `;;`")
+        i += 1                                        # step over the `;;`
+
+        assets = [ln.split("=", 1)[1] for ln in branch if ln.startswith("ASSET=")]
+        digests = [ln.split("=", 1)[1] for ln in branch if ln.startswith("DIGEST=")]
+        if patterns == ["*"]:
+            default_seen = True
+            if assets or digests:
+                raise PlatformParseError(
+                    "the default branch assigns an archive; an unrecognised platform must be "
+                    "refused, not given some other platform's build"
+                )
+            if not any(re.fullmatch(r"exit\s+[1-9]\d*", ln) for ln in branch):
+                raise PlatformParseError("the default branch does not exit nonzero")
+            continue
+        if len(assets) != 1 or len(digests) != 1:
+            raise PlatformParseError(
+                f"branch {head!r} must assign exactly one ASSET and one DIGEST, got "
+                f"{len(assets)} and {len(digests)}"
+            )
+        stray = [ln for ln in branch
+                 if not ln.startswith(("ASSET=", "DIGEST="))]
+        if stray:
+            raise PlatformParseError(f"branch {head!r} contains lines this reader does not "
+                                     f"accept: {stray}")
+        for pat in patterns:
+            if not re.fullmatch(r"[A-Za-z0-9_]+/[A-Za-z0-9_]+", pat):
+                raise PlatformParseError(f"branch pattern {pat!r} is not `System/Machine`")
+            sysname, machine = pat.split("/")
+            if (sysname, machine) in cases:
+                raise PlatformParseError(f"platform {pat} is matched by two branches")
+            cases[(sysname, machine)] = (assets[0], digests[0])
+    if not default_seen:
+        raise PlatformParseError("no `*)` branch: an unrecorded platform would fall through")
+    if not cases:
+        raise PlatformParseError("no platform branches at all")
+    return cases
+
+
 def check_install_script_platforms(script: str, ci_asset: str | None, ci_digest: str | None,
                                    problems: list[str]) -> None:
-    """Run the published script's platform-selection block against a stubbed `uname`.
+    """The published script must select each recorded platform's archive and digest.
 
-    This is the one part of the install script that *is* executed here, and it is executed
-    because a constant is exactly what went wrong: the script used to hard-wire one platform's
-    archive, so a reader on Linux — the platform CI itself runs on — would have downloaded and
-    unpacked a macOS build while the document called the procedure equivalent to CI's.
-
-    For each recorded platform the block must select that platform's archive together with its
-    recorded digest; for a platform with no recorded archive it must exit nonzero rather than
-    default to one; and the pair it selects for the runner's platform must be the pair
-    `.github/workflows/ci.yml` installs.
+    A constant is exactly what went wrong here: the script once hard-wired one platform's pair, so
+    a reader on Linux — the platform CI itself runs on — would have downloaded and unpacked a
+    macOS build while this document called the procedure equivalent to CI's.
     """
     m = SELECTION_RE.search(script)
     if not m:
@@ -470,93 +656,56 @@ def check_install_script_platforms(script: str, ci_asset: str | None, ci_digest:
             "so which archive it picks on which platform cannot be established"
         )
         return
+    try:
+        cases = parse_platform_cases(m.group(0))
+    except PlatformParseError as e:
+        problems.append(f"reports/TOOLCHAIN.md: the platform-selection block is not readable: {e}")
+        return
 
-    fragment = m.group(0)
-    with tempfile.TemporaryDirectory() as tmp:
-        tmpdir = pathlib.Path(tmp)
-        stub = tmpdir / "uname"
-        stub.write_text(
-            "#!/bin/sh\n"
-            'case "$1" in\n'
-            '  -s) echo "${FAKE_UNAME_S}" ;;\n'
-            '  -m) echo "${FAKE_UNAME_M}" ;;\n'
-            '  *) echo "${FAKE_UNAME_S}" ;;\n'
-            "esac\n",
-            encoding="utf-8",
-        )
-        stub.chmod(0o755)
-        harness = tmpdir / "select.sh"
-        harness.write_text(
-            "set -eu\n" + fragment + '\nprintf "%s %s\\n" "${ASSET}" "${DIGEST}"\n',
-            encoding="utf-8",
-        )
-        env = {"PATH": f"{tmpdir}:/usr/bin:/bin", "HOME": str(tmpdir)}
-        selected: dict[tuple[str, str], str] = {}
-        for sysname, machine, expected_asset in PLATFORM_CASES:
-            proc = subprocess.run(
-                ["sh", str(harness)], capture_output=True, text=True,
-                env={**env, "FAKE_UNAME_S": sysname, "FAKE_UNAME_M": machine},
+    for sysname, machine, expected_asset in PLATFORM_CASES:
+        chosen = cases.get((sysname, machine))
+        if expected_asset is None:
+            if chosen is not None:
+                problems.append(
+                    f"reports/TOOLCHAIN.md: {sysname}/{machine} has no recorded archive, but the "
+                    f"install script has a branch selecting {chosen[0]} for it"
+                )
+            continue
+        if chosen is None:
+            problems.append(
+                f"reports/TOOLCHAIN.md: the install script has no branch for {sysname}/{machine}, "
+                "a platform whose archive this repository records"
             )
-            out = (proc.stdout + proc.stderr).strip()
-            if expected_asset is None:
-                if proc.returncode == 0:
-                    problems.append(
-                        f"reports/TOOLCHAIN.md: on {sysname}/{machine}, which has no recorded "
-                        f"archive, the install script selected something instead of failing: "
-                        f"{out!r}"
-                    )
-                elif "UNSUPPORTED PLATFORM" not in out:
-                    problems.append(
-                        f"reports/TOOLCHAIN.md: on {sysname}/{machine} the install script failed "
-                        f"without saying the platform is unsupported: {out!r}"
-                    )
-                continue
-            if proc.returncode != 0:
-                problems.append(
-                    f"reports/TOOLCHAIN.md: the install script fails on {sysname}/{machine}, a "
-                    f"platform whose archive this repository records: {out!r}"
-                )
-                continue
-            parts = proc.stdout.split()[-2:]
-            if len(parts) != 2:
-                problems.append(
-                    f"reports/TOOLCHAIN.md: on {sysname}/{machine} the selection block printed "
-                    f"no ASSET/DIGEST pair: {out!r}"
-                )
-                continue
-            asset, digest = parts
-            selected[(sysname, machine)] = asset
-            if asset != expected_asset:
-                problems.append(
-                    f"reports/TOOLCHAIN.md: on {sysname}/{machine} the install script selects "
-                    f"{asset}, expected {expected_asset}"
-                )
-            elif LEAN_RELEASE_DIGESTS.get(asset) != digest:
-                problems.append(
-                    f"reports/TOOLCHAIN.md: on {sysname}/{machine} the install script pairs "
-                    f"{asset} with digest {digest}, the recorded digest is "
-                    f"{LEAN_RELEASE_DIGESTS.get(asset)}"
-                )
+            continue
+        asset, digest = chosen
+        if asset != expected_asset:
+            problems.append(
+                f"reports/TOOLCHAIN.md: on {sysname}/{machine} the install script selects "
+                f"{asset}, expected {expected_asset}"
+            )
+        elif LEAN_RELEASE_DIGESTS.get(asset) != digest:
+            problems.append(
+                f"reports/TOOLCHAIN.md: on {sysname}/{machine} the install script pairs {asset} "
+                f"with digest {digest}, the recorded digest is {LEAN_RELEASE_DIGESTS.get(asset)}"
+            )
 
-    covered = set(selected.values())
+    covered = {asset for asset, _ in cases.values()}
     if covered != set(LEAN_RELEASE_DIGESTS):
         problems.append(
-            "reports/TOOLCHAIN.md: the install script does not select every recorded archive; "
-            f"selected {sorted(covered)}, recorded {sorted(LEAN_RELEASE_DIGESTS)}"
+            "reports/TOOLCHAIN.md: the install script does not offer every recorded archive; "
+            f"offers {sorted(covered)}, recorded {sorted(LEAN_RELEASE_DIGESTS)}"
         )
-    runner_asset = selected.get(CI_PLATFORM)
-    if runner_asset is not None and ci_asset is not None and runner_asset != ci_asset:
+    runner = cases.get(CI_PLATFORM)
+    if runner is not None and ci_asset is not None and runner[0] != ci_asset:
         problems.append(
-            f"reports/TOOLCHAIN.md: on the runner's platform ({CI_PLATFORM[0]}/"
-            f"{CI_PLATFORM[1]}) the install script selects {runner_asset}, but "
-            f"{WORKFLOW} installs {ci_asset} — the local procedure and CI would install "
-            "different builds"
+            f"reports/TOOLCHAIN.md: on the runner's platform ({CI_PLATFORM[0]}/{CI_PLATFORM[1]}) "
+            f"the install script selects {runner[0]}, but {WORKFLOW} installs {ci_asset} — the "
+            "local procedure and CI would install different builds"
         )
-    if (runner_asset is not None and ci_digest is not None
-            and LEAN_RELEASE_DIGESTS.get(runner_asset) != ci_digest):
+    if runner is not None and ci_digest is not None and runner[1] != ci_digest:
         problems.append(
-            f"reports/TOOLCHAIN.md: the digest recorded for {runner_asset} differs from the one "
-            f"{WORKFLOW} verifies ({ci_digest})"
+            f"reports/TOOLCHAIN.md: on the runner's platform the install script verifies digest "
+            f"{runner[1]}, but {WORKFLOW} verifies {ci_digest}"
         )
 
 
@@ -659,7 +808,7 @@ def main() -> int:
     # repository executes — not CI, not the fixtures — which is exactly why it drifted once while
     # its description said otherwise.
     try:
-        ci_steps = workflow_step_names(root)
+        ci_steps = workflow_steps(root)
     except WorkflowParseError as e:
         print(f"check_doc_claims.py: FAIL — could not read {WORKFLOW} structurally: {e}",
               file=sys.stderr)
@@ -683,6 +832,10 @@ def main() -> int:
             problems,
         )
         structural_run.append(DECLARED_STRUCTURAL_CHECKS[2])
+        # The command-set comparison lives inside check_install_script_labels, alongside the
+        # label comparison it strengthens; it is declared separately because it is a separate
+        # promise and must not be able to disappear silently.
+        structural_run.append(DECLARED_STRUCTURAL_CHECKS[3])
     else:
         structural_run += list(DECLARED_STRUCTURAL_CHECKS[1:])
     if problems:
@@ -972,9 +1125,9 @@ def main() -> int:
 
     print(
         f"document claims hold: {len(DECLARED_STRUCTURAL_CHECKS)} structural check(s) on the "
-        f"published install script passed (single block, sh -n, CI step labels against all "
-        f"{len(ci_steps)} workflow steps, and archive selection exercised on "
-        f"{len(PLATFORM_CASES)} platforms with a stubbed uname); "
+        f"published install script passed (single block, sh -n, CI step labels and command sets "
+        f"against all {len(ci_steps)} workflow steps, and the platform-selection block parsed "
+        f"and checked for {len(PLATFORM_CASES)} platforms); "
         f"{len(transcripts)} published transcript(s) matched exactly (one "
         f"block each, in its own section); the build transcript matched on modules "
         f"({len(built_modules)}) and job count ({jobs}); {len(claims)} numeric/pin claim(s) "

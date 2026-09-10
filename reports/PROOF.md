@@ -28,18 +28,29 @@ document" below. The four:
   declaration whose kernel typecheck was locally disabled has a clean axiom closure precisely
   because nothing was checked. It is a layer on top of the environment audit and never a
   substitute for it.
-* **The regression fixtures** — `scripts/regression_fixtures.py`. 12 fixture runs covering 8
+* **The regression fixtures** — `scripts/regression_fixtures.py`. 15 fixture runs covering 9
   failure modes of this repository, each applied to a throwaway copy of it, each required to fail
   *and* to fail at the layer that owns it, *and* to fail `./scripts/check_axioms.sh` itself with
   the diagnostic that names that layer. This is what keeps the other three honest: a layer that stopped working
   would turn a fixture green, and a green fixture is a red CI run. It is run in CI immediately
   before the gate, so the gate has to pass on the same tree afterwards. See "Required regression
   tests".
-* **The import invariant** — `scripts/check_imports.py`. It requires every `AhlProofs/**/*.lean`
-  file found on disk to be reachable by imports from the root module `AhlProofs.lean`, so that
-  what was built — and therefore what the environment audit can see — is everything that is
-  there. Without it, a file nobody imports is neither compiled nor audited, and both `lake build`
-  and the audit exit 0 while ignoring it completely.
+* **Lean-file coverage and the import invariant** — `scripts/check_imports.py`. Two rules, the
+  second because the first was not enough. Every `.lean` file anywhere in the working tree must
+  fall into one of two **declared** categories: a library module (`AhlProofs.lean` or a file under
+  `AhlProofs/`), or a file named in that script's `DECLARED_AUXILIARY`. And every library module
+  must be reachable by imports from the root module, so that what was built — and therefore what
+  the environment audit can see — is everything that is there.
+
+  The second rule alone left a file nobody imports uncompiled and unaudited, with `lake build` and
+  the audit both exiting 0. But three times a Lean file turned out to sit somewhere *no* check
+  looked: under `AhlProofs/` unimported, under `scripts/` in a subdirectory a non-recursive glob
+  missed, and finally in the repository root, where `axiom planted_at_root : False` passed the
+  manifest, the import invariant, the source policy, `lake build` and the whole gate. Each time
+  the fix had been to walk one more directory, which is how a fourth place stays available. The
+  rule is now inverted: a file that belongs to no declared category fails, with its path and what
+  to do about it. There is no directory left to forget, because directories are no longer what is
+  enumerated.
 
 ### What is checked about this document
 
@@ -79,14 +90,27 @@ if something is not on it, it is not machine-checked, whatever else these docume
      script installs the right toolchain or runs the right checks, because nothing here executes
      it.
    * **It selects the recorded archive for every recorded platform.** The script's
-     `# --- platform selection` block is extracted and *executed* against a stubbed `uname`, once
-     per platform: each of the four recorded platforms must yield that platform's archive paired
-     with that platform's recorded digest, a platform with no recorded archive must make the
-     script exit nonzero rather than fall back to one, and the pair chosen for the runner's
-     platform must be the pair `.github/workflows/ci.yml` installs. This is the only part of the
-     install script that is executed here, and it is executed because a constant is exactly what
-     went wrong: the script once hard-wired one platform, so a reader on Linux — the platform CI
-     runs on — would have unpacked a macOS build.
+     `# --- platform selection` block is **parsed, never executed**: the `case` on
+     `"$(uname -s)/$(uname -m)"` is read branch by branch, in one accepted form, and anything
+     outside that form fails rather than being run to find out what it does. Each of the four
+     recorded platforms must map to that platform's archive paired with that platform's recorded
+     digest; there must be a `*)` branch that assigns no archive and exits nonzero, so an
+     unrecorded platform is refused rather than handed some other platform's build; and the pair
+     for the runner's platform must be the pair `.github/workflows/ci.yml` installs. This exists
+     because a constant is exactly what went wrong: the script once hard-wired one platform, so a
+     reader on Linux — the platform CI runs on — would have unpacked a macOS build. An earlier
+     version of *this check* ran the fragment with a stubbed `uname`, which answered the question
+     but overstated its own safety: it executed text from a Markdown file in the working
+     directory, with only `uname` shadowed and no timeout. Parsing a known small form is both
+     stricter and free of that.
+   * **The commands in each labelled block match the workflow step it mirrors.** For every label,
+     the set of commands in the block under it must equal the set in the workflow steps it covers.
+     *This is a declared vocabulary, not shell equivalence*: `python3 scripts/*.py`,
+     `./scripts/*.sh`, `lake clean|build|env|--version`, `lean --version`, `curl`, a `sha256`
+     comparison, `tar`, `find`. Everything else — `echo`, `mkdir`, `mv`, control flow, variable
+     assignments — is ignored, and two blocks with identical vocabularies can still differ in what
+     they do. It is here because label-only comparison missed a real divergence: `lake --version`
+     ran in CI's self-report step and not in the published script, and nothing said so.
    * **Its `# CI step N [key].` labels match the workflow.** Expanded, the labels must cover
      `.github/workflows/ci.yml`'s steps exactly once each, in order, with each label's key
      occurring in that step's `name`. A step added to, removed from or reordered within the
@@ -388,10 +412,10 @@ a library that just finished building — the two conditions cannot both hold.
 
 ### Required regression tests
 
-**12 fixture runs covering 8 failure modes** — eight ways for this pipeline to be wrong; mode 6 is
-exercised twice with a different set of layers active (6 and 6b), and mode 7 once per forbidden
-lexeme (7a–7d), because a policy rule that no fixture exercises can be deleted without turning
-anything red. Each run must make the pipeline exit nonzero **and must be caught by the layer
+**15 fixture runs covering 9 failure modes** — nine ways for this pipeline to be wrong; mode 6 is
+exercised twice with a different set of layers active (6 and 6b), mode 7 once per forbidden lexeme
+(7a–7d), because a policy rule that no fixture exercises can be deleted without turning anything
+red, and mode 9 once per place a Lean file has actually turned up uncovered (9a–9c). Each run must make the pipeline exit nonzero **and must be caught by the layer
 responsible for it** — a fixture that failed for some unrelated reason would satisfy "exits
 nonzero" and prove nothing.
 
@@ -457,8 +481,11 @@ exited 0, `1` = exited nonzero, `-` = not run):
       7c    policy         0         0         1         0         1         0   ok
       7d    policy         0         0         1         0         1         0   ok
        8  manifest         0         0         0         0         0         1   ok
+      9a   imports         0         1         0         0         1         0   ok
+      9b   imports         0         1         0         0         1         0   ok
+      9c   imports         0         1         0         0         1         1   ok
 
-all 12 fixture run(s) covering 8 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
+all 15 fixture run(s) covering 9 failure mode(s) behaved as declared: each broke the pipeline, and each was caught by the layer named for it. Working tree unchanged (28 file(s) hashed before and after, excluding .git/, .lake/, __pycache__/).
 ```
 
 | # | Fragment | Layer under test | Why that layer, and why not another |
@@ -474,7 +501,10 @@ all 12 fixture run(s) covering 8 failure mode(s) behaved as declared: each broke
 | 7b | `-- admit` in a Lean line comment | source policy | The rule that had no fixture at all until this one. Deleting the `admit` pattern from `scripts/check_source_policy.py` used to leave the whole suite green; it now fails this run. |
 | 7c | `-- warningAsError false` in a Lean line comment | source policy | Fixture 2 exercises this lexeme in its natural setting; this run pins the rule itself, independent of whether an `example` or a `set_option` happens to be involved. |
 | 7d | `-- debug.skipKernelTC` in a Lean line comment | source policy | Same, for the kernel-typecheck escape: the rule is tested apart from the elaborate proof that motivates it. |
-| 8 | `scripts/nested/helper.py`, `helper.sh` and `Helper.lean`, manifest left stale | hash manifest | The manifest documents itself as hashing *every* audit script, but discovered them with a single-level `glob` while the library used `rglob` — so a script one directory down was outside the manifest while the prose said it was covered. The fixture requires the staleness report to name all three nested paths, so the recursive walk is exercised for every extension the manifest claims, not just whichever one a single file would have picked. Like 6b, the gate itself passes: nothing the gate covers is broken. |
+| 8 | `scripts/nested/helper.py` and `helper.sh`, manifest left stale | hash manifest | The manifest documents itself as hashing *every* audit script, but discovered them with a single-level `glob` while the library used `rglob` — so a script one directory down was outside the manifest while the prose said it was covered. The fixture requires the staleness report to name both nested paths, so the recursive walk is exercised for more than whichever extension a single file would have picked. Like 6b, the gate itself passes: nothing the gate covers is broken. |
+| 9a | `Foo.lean` in the repository root, containing `axiom planted_at_root : False` | Lean-file coverage | The case that passed everything: not under `AhlProofs/` so no import invariant looked at it, not under `AhlProofs/` or `scripts/` so the manifest did not hash it, no forbidden lexeme so the policy passed it, not in the build target so `lake build` ignored it, never elaborated so the audit never saw the axiom. Every check walked a chosen directory; none asked whether this file had a home. |
+| 9b | `docs/Notes.lean` | Lean-file coverage | The same failure in a different directory, which is the point: the rule is now "every `.lean` must be classified", not "these directories are walked", so `docs/` needs no special case and neither will the next directory someone creates. |
+| 9c | `scripts/nested/Helper.lean` | Lean-file coverage | Under `scripts/`, where the manifest *does* see it (fixture 8's recursive walk) but where nothing classified it. The manifest goes stale here too, and the fixture asserts both — the coverage rule is what names it, the manifest is what would have noticed the bytes. |
 
 For every fixture except 6 and 6b the runner regenerates the manifest inside the copy after
 applying the fixture, so manifest staleness cannot be what fails and the named layer is
@@ -585,8 +615,8 @@ The whole gate, verbatim, on the tree this document describes — exit status 0:
 
 ```
 $ ./scripts/check_axioms.sh
-== layer 1/3: scripts/check_imports.py (import invariant) ==
-import invariant holds: 9 file(s) under AhlProofs/, all reachable from AhlProofs.lean (10 module(s) in the transitive closure)
+== layer 1/3: scripts/check_imports.py (Lean-file coverage & import invariant) ==
+every .lean accounted for: 9 library module(s) under AhlProofs/, all reachable from AhlProofs.lean (10 module(s) in the closure); 1 declared auxiliary file(s); 0 unclassified
 
 == layer 2/3: scripts/check_source_policy.py (policy over source text) ==
 source policy holds: 11 .lean file(s) scanned, none contains `sorry`, `admit`, `warningAsError false`, `debug.skipKernelTC`
